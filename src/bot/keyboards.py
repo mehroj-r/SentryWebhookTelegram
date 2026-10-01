@@ -6,6 +6,8 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from ..filters import describe_filters
+
 # Telegram caps callback_data at 64 bytes. Sentry project slugs (≤50 chars) and
 # environment names (≤64 chars) can't be embedded verbatim, so callbacks carry a
 # short stable hash and handlers resolve it against the current project /
@@ -77,7 +79,7 @@ def routes_keyboard(routes: list[dict]) -> InlineKeyboardMarkup:
     for r in routes:
         env_label = r["environment"] or "any env"
         builder.button(
-            text=_button_label(f"✖️ {r['project']} / {env_label}"),
+            text=_button_label(f"✖️ {r['project']} / {env_label}{describe_filters(r)}"),
             callback_data=DelRouteCallback(route_id=r["id"]),
         )
     builder.adjust(1)

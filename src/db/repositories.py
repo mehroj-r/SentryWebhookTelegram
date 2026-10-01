@@ -205,19 +205,47 @@ class RouteRepository(BaseRepository):
         async with self._sessionmaker() as session:
             rows = (
                 await session.execute(
-                    select(Route.id, Route.project, Route.environment)
+                    select(Route)
                     .where(Route.chat_id == chat_id)
                     .order_by(Route.project, Route.environment)
                 )
-            ).all()
-            return [
-                {"id": r.id, "project": r.project, "environment": r.environment}
-                for r in rows
-            ]
+            ).scalars().all()
+            return [_route_dict(r) for r in rows]
 
-    async def resolve_chats(self, project: str, environment: Optional[str]) -> list[int]:
+    async def set_filters(
+        self,
+        chat_id: int,
+        project: Optional[str],
+        *,
+        min_level: Optional[str] = ...,  # type: ignore[assignment]
+        actions: Optional[str] = ...,  # type: ignore[assignment]
+        muted_until: Optional[datetime] = ...,  # type: ignore[assignment]
+    ) -> int:
         """
-        Return chat IDs for (project, environment).
+        Update filter columns on every route of `chat_id` (optionally only
+        those for `project`). Arguments left as Ellipsis are not touched.
+        Returns the number of routes updated.
+        """
+        values: dict = {}
+        if min_level is not ...:
+            values["min_level"] = min_level
+        if actions is not ...:
+            values["actions"] = actions
+        if muted_until is not ...:
+            values["muted_until"] = muted_until
+        if not values:
+            return 0
+        stmt = update(Route).where(Route.chat_id == chat_id).values(**values)
+        if project:
+            stmt = stmt.where(Route.project == project)
+        async with self._sessionmaker() as session:
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount or 0
+
+    async def resolve_routes(self, project: str, environment: Optional[str]) -> list[dict]:
+        """
+        Return matching routes (with their filter columns) for (project, environment).
 
         - environment given: exact (project, environment) matches win; if there
           are none, fall back to the (project, NULL) "any environment" routes.
@@ -230,21 +258,41 @@ class RouteRepository(BaseRepository):
             if environment:
                 rows = (
                     await session.execute(
-                        select(Route.chat_id)
-                        .where(Route.project == project, Route.environment == environment)
-                        .distinct()
+                        select(Route).where(
+                            Route.project == project, Route.environment == environment
+                        )
                     )
                 ).scalars().all()
                 if rows:
-                    return list(rows)
+                    return [_route_dict(r) for r in rows]
                 where = (Route.project == project, Route.environment.is_(None))
             else:
                 where = (Route.project == project,)
 
-            rows = (
-                await session.execute(select(Route.chat_id).where(*where).distinct())
-            ).scalars().all()
-            return list(rows)
+            rows = (await session.execute(select(Route).where(*where))).scalars().all()
+            return [_route_dict(r) for r in rows]
+
+    async def resolve_chats(self, project: str, environment: Optional[str]) -> list[int]:
+        """Distinct chat ids of `resolve_routes` (filters ignored)."""
+        seen: list[int] = []
+        for r in await self.resolve_routes(project, environment):
+            if r["chat_id"] not in seen:
+                seen.append(r["chat_id"])
+        return seen
+
+
+def _route_dict(r: Route) -> dict:
+    return {
+        "id": r.id,
+        "project": r.project,
+        "environment": r.environment,
+        "chat_id": r.chat_id,
+        "created_by": r.created_by,
+        "created_at": r.created_at,
+        "min_level": r.min_level,
+        "actions": r.actions,
+        "muted_until": r.muted_until,
+    }
 
 
 # ── Delivery log ───────────────────────────────────────────────────────────────

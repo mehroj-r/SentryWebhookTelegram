@@ -16,6 +16,7 @@ from aiogram.exceptions import (
 
 from .config import settings
 from .db import Repositories
+from .filters import skip_reason
 from .sentry.formatters import append_footer, format_event, status_footer
 from .sentry.parser import ParsedEvent
 
@@ -26,9 +27,12 @@ _BACKOFF_BASE_S = 1.0
 _BACKOFF_MAX_S = 30.0
 
 
-async def _resolve_chats(repos: Repositories, event: ParsedEvent) -> list[int]:
+async def _resolve_targets(repos: Repositories, event: ParsedEvent) -> dict[int, Optional[str]]:
     """
-    Return target chat IDs for a parsed event.
+    Map each target chat id to None (deliver) or a skip reason (filtered out).
+
+    A chat may match through several routes; it is skipped only if *every*
+    matching route filters the event out.
 
     Resolution order:
     1. Routes for the project slug (exact env, then "any env" wildcard)
@@ -47,14 +51,25 @@ async def _resolve_chats(repos: Repositories, event: ParsedEvent) -> list[int]:
         candidates.append(str(event.project_ref_id))
 
     for project in candidates:
-        chats = await repos.routes.resolve_chats(project, event.environment)
-        if chats:
-            return chats
+        routes = await repos.routes.resolve_routes(project, event.environment)
+        if routes:
+            targets: dict[int, Optional[str]] = {}
+            for route in routes:
+                reason = skip_reason(event, route)
+                chat_id = route["chat_id"]
+                if chat_id not in targets or reason is None:
+                    targets[chat_id] = reason
+            return targets
 
     if settings.default_chat_id:
-        return [settings.default_chat_id]
+        return {settings.default_chat_id: None}
 
-    return []
+    return {}
+
+
+async def _resolve_chats(repos: Repositories, event: ParsedEvent) -> list[int]:
+    """Chat ids that would receive the event (filters applied)."""
+    return [chat for chat, reason in (await _resolve_targets(repos, event)).items() if reason is None]
 
 
 class SendResult:
@@ -115,7 +130,12 @@ async def _send_to_chat(
 
 
 async def _record(
-    repos: Repositories, event: ParsedEvent, chat_id: int, result: SendResult, text: str
+    repos: Repositories,
+    event: ParsedEvent,
+    chat_id: int,
+    result: SendResult,
+    text: str,
+    status: Optional[str] = None,
 ) -> None:
     try:
         await repos.deliveries.record(
@@ -126,7 +146,7 @@ async def _record(
             environment=event.environment,
             issue_id=event.issue_id,
             title=event.title,
-            status="sent" if result.ok else "failed",
+            status=status or ("sent" if result.ok else "failed"),
             error=result.error,
             tg_message_id=result.message_id,
             text=text if result.ok else None,
@@ -160,8 +180,8 @@ async def _stamp_original(
 
 async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
     """Resolve routing and deliver the formatted event to all matched chats."""
-    chats = await _resolve_chats(repos, event)
-    if not chats:
+    targets = await _resolve_targets(repos, event)
+    if not targets:
         log.warning(
             "No target chats for resource=%s action=%s project=%s env=%s",
             event.resource,
@@ -172,7 +192,11 @@ async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
         return
 
     text = format_event(event)
-    for chat_id in chats:
+    for chat_id, reason in targets.items():
+        if reason is not None:
+            log.info("Skipping chat_id=%s for %s.%s: %s", chat_id, event.resource, event.action, reason)
+            await _record(repos, event, chat_id, SendResult(error=reason), text, status="skipped")
+            continue
         prior: Optional[dict] = None
         if event.issue_id:
             try:

@@ -24,6 +24,11 @@ class Route(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Noise control (all optional): minimum level, comma-separated action
+    # allowlist, and a mute deadline.
+    min_level: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    actions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Project(Base):

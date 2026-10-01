@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 from html import escape
 from typing import Optional
 
@@ -11,6 +12,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from ..db import Repositories
+from ..filters import LEVELS, normalize_level, parse_actions, parse_duration
 from .keyboards import (
     ANY_ENV,
     DelRouteCallback,
@@ -69,6 +71,8 @@ async def cmd_start(message: Message) -> None:
         "• /subscribe — route Sentry events to this chat\n"
         "• /routes — view and remove routing rules for this chat\n"
         "• /add_route &lt;slug&gt; [env] — add a route by project slug\n"
+        "• /filter &lt;slug|all&gt; level=&lt;min&gt; actions=&lt;a,b&gt; — noise control\n"
+        "• /mute &lt;30m|2h|1d&gt; [slug] and /unmute [slug] — pause alerts\n"
         "• /last — show the last events delivered to this chat\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
         "• /help — show this message",
@@ -222,6 +226,98 @@ async def cmd_add_route(message: Message, repos: Repositories) -> None:
         await message.answer(f"✅ Route added: {label} → this chat.")
     else:
         await message.answer(f"ℹ️ Route already exists: {label} → this chat.")
+
+
+_FILTER_USAGE = (
+    "Usage: <code>/filter &lt;project-slug|all&gt; [level=&lt;min&gt;] [actions=&lt;a,b&gt;]</code>\n"
+    "or <code>/filter &lt;project-slug|all&gt; clear</code>\n\n"
+    f"Levels: {', '.join(LEVELS)}. Actions e.g. created,resolved,assigned."
+)
+
+
+@admin_router.message(Command("filter"))
+async def cmd_filter(message: Message, repos: Repositories) -> None:
+    """Set min level / allowed actions on this chat's routes."""
+    parts = (message.text or "").split()[1:]
+    if not parts:
+        await message.answer(_FILTER_USAGE)
+        return
+    project: Optional[str] = None if parts[0].lower() == "all" else parts[0]
+    if project and not _SLUG_RE.match(project):
+        await message.answer(_FILTER_USAGE)
+        return
+
+    opts = parts[1:]
+    if opts == ["clear"]:
+        n = await repos.routes.set_filters(message.chat.id, project, min_level=None, actions=None)
+        await message.answer(f"🧹 Filters cleared on {n} route(s).")
+        return
+
+    kwargs: dict = {}
+    for opt in opts:
+        key, _, value = opt.partition("=")
+        if key == "level":
+            level = normalize_level(value)
+            if level is None:
+                await message.answer(f"Unknown level <code>{escape(value)}</code>.\n" + _FILTER_USAGE)
+                return
+            kwargs["min_level"] = level
+        elif key == "actions":
+            actions = parse_actions(value)
+            if not actions or any(not re.match(r"^[a-z_]+$", a) for a in actions):
+                await message.answer(_FILTER_USAGE)
+                return
+            kwargs["actions"] = ",".join(actions)
+        else:
+            await message.answer(_FILTER_USAGE)
+            return
+    if not kwargs:
+        await message.answer(_FILTER_USAGE)
+        return
+
+    n = await repos.routes.set_filters(message.chat.id, project, **kwargs)
+    if n == 0:
+        await message.answer("No matching routes in this chat. Add one first with /subscribe.")
+        return
+    desc = " ".join(f"{k.replace('min_', '')}={escape(v)}" for k, v in kwargs.items())
+    await message.answer(f"🔧 Updated {n} route(s): <code>{desc}</code>")
+
+
+@admin_router.message(Command("mute"))
+async def cmd_mute(message: Message, repos: Repositories) -> None:
+    """/mute <duration> [project-slug] — pause deliveries to this chat."""
+    parts = (message.text or "").split()[1:]
+    usage = "Usage: <code>/mute &lt;30m|2h|1d&gt; [project-slug]</code>"
+    if not parts or len(parts) > 2:
+        await message.answer(usage)
+        return
+    duration = parse_duration(parts[0])
+    if duration is None or duration.total_seconds() <= 0:
+        await message.answer(usage)
+        return
+    project = parts[1] if len(parts) > 1 else None
+    if project and not _SLUG_RE.match(project):
+        await message.answer(usage)
+        return
+    until = datetime.now(timezone.utc) + duration
+    n = await repos.routes.set_filters(message.chat.id, project, muted_until=until)
+    if n == 0:
+        await message.answer("No matching routes in this chat.")
+        return
+    await message.answer(
+        f"🔇 Muted {n} route(s) until <code>{until:%Y-%m-%d %H:%M} UTC</code>. Use /unmute to resume."
+    )
+
+
+@admin_router.message(Command("unmute"))
+async def cmd_unmute(message: Message, repos: Repositories) -> None:
+    parts = (message.text or "").split()[1:]
+    project = parts[0] if parts else None
+    if project and not _SLUG_RE.match(project):
+        await message.answer("Usage: <code>/unmute [project-slug]</code>")
+        return
+    n = await repos.routes.set_filters(message.chat.id, project, muted_until=None)
+    await message.answer(f"🔔 Unmuted {n} route(s).")
 
 
 @admin_router.callback_query(DelRouteCallback.filter())
