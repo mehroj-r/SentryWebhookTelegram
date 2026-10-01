@@ -365,6 +365,28 @@ def _format_installation(event: ParsedEvent) -> str:
     return "\n".join(lines)
 
 
+def _format_release(event: ParsedEvent) -> str:
+    ex = event.extra
+    emoji = "🚀" if event.action in ("deployed", "created", "finalized") else "📦"
+    version = ex.get("version") or "(unknown version)"
+    head = _link(str(version), event.web_url, limit=80)
+    lines: list[str] = [f"{emoji} <b>Release {_e(event.action.upper())}</b>: {head}"]
+    if ex.get("projects"):
+        lines.append("📁 " + ", ".join(f"<code>{_e(p)}</code>" for p in ex["projects"][:5]))
+    if event.environment:
+        env = _e(event.environment)
+        if ex.get("deploy_name"):
+            env += f" ({_e(ex['deploy_name'])})"
+        lines.append(f"🌍 Env: <code>{env}</code>")
+    if ex.get("commit_count"):
+        lines.append(f"🔀 Commits: {_e(ex['commit_count'])}")
+    if ex.get("authors"):
+        lines.append("👥 " + _e(", ".join(ex["authors"])))
+    if event.actor:
+        lines.append(f"by {_e(event.actor)}")
+    return "\n".join(lines)
+
+
 def _format_generic(event: ParsedEvent) -> str:
     emoji = _ACTION_EMOJI.get(event.action, "🔔")
     lines: list[str] = [
@@ -384,4 +406,5 @@ _FORMATTERS = {
     "error": _format_error,
     "comment": _format_comment,
     "installation": _format_installation,
+    "release": _format_release,
 }

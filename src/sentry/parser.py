@@ -219,6 +219,8 @@ def parse(payload: dict[str, Any], resource: str) -> ParsedEvent:
         "error": _parse_error,
         "comment": _parse_comment,
         "installation": _parse_installation,
+        "release": _parse_release,
+        "deploy": _parse_release,
     }
     fn = parsers.get(resource, _parse_generic)
     event = fn(action, data, resource)
@@ -401,6 +403,64 @@ def _parse_installation(action: str, data: dict, _resource: str = "installation"
             "app_slug": app_slug,
             "org_slug": org_slug,
             "code": installation.get("code"),
+        },
+    )
+
+
+def _parse_release(action: str, data: dict, resource: str = "release") -> ParsedEvent:
+    """
+    Release / deploy notification.
+
+    Accepted shape (also what a CI job can POST to the Sentry endpoint, signed
+    with the same client secret):
+
+        {"action": "deployed", "data": {
+            "release": {"version": "backend@1.4.2", "url": "...", "projects": ["backend"],
+                        "commit_count": 12, "authors": [{"name": "Jane"}]},
+            "deploy":  {"environment": "production", "name": "prod-eu", "url": "..."}}}
+    """
+    release = _dict(data.get("release"))
+    deploy = _dict(data.get("deploy"))
+
+    projects = release.get("projects") or data.get("projects")
+    project_slug: Optional[str] = None
+    if isinstance(projects, list) and projects:
+        first = projects[0]
+        project_slug = _str_or_none(first.get("slug") if isinstance(first, dict) else first)
+    project_slug = project_slug or _str_or_none(data.get("project") or data.get("project_slug"))
+
+    version = _str_or_none(release.get("version") or release.get("shortVersion") or data.get("version"))
+    environment = _str_or_none(deploy.get("environment") or release.get("environment") or data.get("environment"))
+
+    authors = release.get("authors")
+    author_names: list[str] = []
+    if isinstance(authors, list):
+        for a in authors:
+            name = _str_or_none(a.get("name") or a.get("email")) if isinstance(a, dict) else _str_or_none(a)
+            if name:
+                author_names.append(name)
+
+    verb = action or "deployed"
+    title = f"{version or '(unknown version)'} {verb}"
+    if environment:
+        title += f" to {environment}"
+
+    return ParsedEvent(
+        resource="release",
+        action=verb,
+        project_slug=project_slug,
+        project_ref_id=None,
+        environment=environment,
+        title=title,
+        web_url=_str_or_none(deploy.get("url") or release.get("url") or data.get("web_url")),
+        extra={
+            "version": version,
+            "deploy_name": _str_or_none(deploy.get("name")),
+            "commit_count": release.get("commitCount") or release.get("commit_count"),
+            "authors": author_names[:5],
+            "projects": [p.get("slug") if isinstance(p, dict) else str(p) for p in projects]
+            if isinstance(projects, list) else None,
+            "date_released": _str_or_none(release.get("dateReleased") or release.get("date_released")),
         },
     )
 
