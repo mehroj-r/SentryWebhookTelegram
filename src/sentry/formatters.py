@@ -183,6 +183,53 @@ def format_event(event: ParsedEvent) -> str:
     return _clamp(fn(event))
 
 
+def _context_lines(ex: dict) -> list[str]:
+    """Compact context for event bodies: release, where, who, platform."""
+    lines: list[str] = []
+    if ex.get("release"):
+        rel = _truncate(str(ex["release"]), 60)
+        if ex.get("dist"):
+            rel += f" ({_truncate(str(ex['dist']), 20)})"
+        lines.append(f"📦 Release: <code>{_e(rel)}</code>")
+    frame = ex.get("top_frame")
+    if frame and (frame.get("filename") or frame.get("function")):
+        loc = _truncate(str(frame.get("filename") or "?"), 80)
+        if frame.get("lineno"):
+            loc += f":{frame['lineno']}"
+        fn = f" in <code>{_e(_truncate(str(frame['function']), 60))}</code>" if frame.get("function") else ""
+        lines.append(f"📍 <code>{_e(loc)}</code>{fn}")
+    elif ex.get("culprit"):
+        lines.append(f"📍 <i>{_e(_truncate(str(ex['culprit']), 120))}</i>")
+    if ex.get("transaction") and ex.get("transaction") != ex.get("culprit"):
+        lines.append(f"🧭 <code>{_e(_truncate(str(ex['transaction']), 100))}</code>")
+    if ex.get("request_url"):
+        method = f"{_e(ex['request_method'])} " if ex.get("request_method") else ""
+        lines.append(f"🌐 {method}{_link(str(ex['request_url']), str(ex['request_url']), limit=100)}")
+    if ex.get("user"):
+        lines.append(f"👤 User: {_e(_truncate(str(ex['user']), 60))}")
+    platform_bits = [str(ex[k]) for k in ("browser", "os", "runtime") if ex.get(k)]
+    if platform_bits:
+        lines.append(f"🖥️ {_e(' · '.join(platform_bits))}")
+    elif ex.get("platform"):
+        lines.append(f"🖥️ Platform: {_e(ex['platform'])}")
+    return lines
+
+
+def _details_block(ex: dict) -> Optional[str]:
+    """Expandable blockquote with tags and the last breadcrumbs (collapsed by default)."""
+    rows: list[str] = []
+    tags = ex.get("tags") or {}
+    if tags:
+        rows.append("🏷 " + ", ".join(f"{_e(k)}={_e(_truncate(str(v), 40))}" for k, v in tags.items()))
+    crumbs = ex.get("breadcrumbs") or []
+    for c in crumbs:
+        cat = f"[{_e(c['category'])}] " if c.get("category") else ""
+        rows.append(f"🍞 {cat}{_e(_truncate(str(c.get('message') or ''), 100))}")
+    if not rows:
+        return None
+    return "<blockquote expandable>" + "\n".join(rows) + "</blockquote>"
+
+
 # ── per-resource formatters ────────────────────────────────────────────────────
 
 
@@ -198,7 +245,15 @@ def _format_issue(event: ParsedEvent) -> str:
         lines.append(f"🆔 <code>{_e(ex['short_id'])}</code>")
     if ex.get("project_name"):
         lines.append(f"📁 Project: {_e(ex['project_name'])}")
-    if ex.get("culprit"):
+    if ex.get("is_regression"):
+        lines.append("↩️ <b>Regression</b>")
+    if ex.get("exc_value") and str(ex["exc_value"]) not in event.title:
+        lines.append(f"<i>{_e(_truncate(str(ex['exc_value']), 200))}</i>")
+    if ex.get("filename") or ex.get("function"):
+        loc = _truncate(str(ex.get("filename") or "?"), 80)
+        fn = f" in <code>{_e(_truncate(str(ex['function']), 60))}</code>" if ex.get("function") else ""
+        lines.append(f"📍 <code>{_e(loc)}</code>{fn}")
+    elif ex.get("culprit"):
         lines.append(f"📍 <i>{_e(_truncate(str(ex['culprit']), 120))}</i>")
     if ex.get("level"):
         level_emoji = _LEVEL_EMOJI.get(str(ex["level"]), "")
@@ -228,13 +283,17 @@ def _format_event_alert(event: ParsedEvent) -> str:
 
     if rule := event.extra.get("triggered_rule"):
         lines.append(f"📋 Rule: <i>{_e(_truncate(str(rule), 120))}</i>")
-    if culprit := event.extra.get("culprit"):
-        lines.append(f"📍 <i>{_e(_truncate(str(culprit), 120))}</i>")
+    if msg := event.extra.get("message"):
+        if msg != event.title:
+            lines.append(f"<i>{_e(_truncate(str(msg), 200))}</i>")
     if env := event.environment:
         lines.append(f"🌍 Env: <code>{_e(env)}</code>")
     if level := event.extra.get("level"):
         level_emoji = _LEVEL_EMOJI.get(str(level), "")
         lines.append(f"{level_emoji} Level: <b>{_e(level)}</b>".strip())
+    lines.extend(_context_lines(event.extra))
+    if details := _details_block(event.extra):
+        lines.append(details)
 
     return "\n".join(lines)
 
@@ -261,15 +320,18 @@ def _format_error(event: ParsedEvent) -> str:
     lines: list[str] = [f"{emoji} <b>Error</b>: {title_part}"]
 
     if msg := event.extra.get("message"):
-        lines.append(f"<i>{_e(_truncate(str(msg), 200))}</i>")
-    if culprit := event.extra.get("culprit"):
-        lines.append(f"📍 <i>{_e(_truncate(str(culprit), 120))}</i>")
+        if msg != event.title:
+            lines.append(f"<i>{_e(_truncate(str(msg), 200))}</i>")
+    frame = event.extra.get("top_frame") or {}
+    if frame.get("exc_value") and frame.get("exc_value") != event.title:
+        lines.append(f"<i>{_e(_truncate(str(frame['exc_value']), 200))}</i>")
     if env := event.environment:
         lines.append(f"🌍 Env: <code>{_e(env)}</code>")
-    if plat := event.extra.get("platform"):
-        lines.append(f"🖥️ Platform: {_e(plat)}")
+    lines.extend(_context_lines(event.extra))
     if eid := event.extra.get("event_id"):
         lines.append(f"🆔 ID: <code>{_e(eid)}</code>")
+    if details := _details_block(event.extra):
+        lines.append(details)
 
     return "\n".join(lines)
 

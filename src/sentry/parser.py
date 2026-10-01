@@ -103,6 +103,106 @@ def _tag_value(tags: Any, key: str) -> Optional[str]:
     return None
 
 
+_IGNORED_TAGS = {"environment", "level", "release", "transaction", "url", "user", "sentry:user",
+                 "sentry:release", "sentry:dist", "handled", "mechanism", "logger"}
+_PREFERRED_TAGS = ("browser", "browser.name", "os", "os.name", "device", "server_name",
+                   "runtime", "runtime.name", "client_os.name")
+
+
+def _tags_dict(tags: Any) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(tags, list):
+        return out
+    for tag in tags:
+        if isinstance(tag, (list, tuple)) and len(tag) == 2 and tag[0]:
+            out[str(tag[0])] = str(tag[1])
+        elif isinstance(tag, dict) and tag.get("key"):
+            out[str(tag["key"])] = str(tag.get("value", ""))
+    return out
+
+
+def _top_frame(exception: Any) -> Optional[dict[str, Any]]:
+    """Innermost in-app frame of the last exception value (fallback: any frame)."""
+    exc = _dict(exception)
+    values = exc.get("values")
+    if not isinstance(values, list) or not values:
+        return None
+    last = _dict(values[-1])
+    frames = _dict(last.get("stacktrace")).get("frames")
+    if not isinstance(frames, list) or not frames:
+        return None
+    frame_dicts = [f for f in frames if isinstance(f, dict)]
+    if not frame_dicts:
+        return None
+    in_app = [f for f in frame_dicts if f.get("in_app") or f.get("inApp")]
+    frame = (in_app or frame_dicts)[-1]  # Sentry orders frames outermost → innermost
+    return {
+        "filename": frame.get("filename") or frame.get("abs_path") or frame.get("absPath"),
+        "function": frame.get("function"),
+        "lineno": frame.get("lineno") or frame.get("lineNo"),
+        "exc_type": last.get("type"),
+        "exc_value": last.get("value"),
+    }
+
+
+def _breadcrumbs(breadcrumbs: Any, limit: int = 3) -> list[dict[str, Any]]:
+    bc = _dict(breadcrumbs)
+    values = bc.get("values") if bc else breadcrumbs
+    if not isinstance(values, list):
+        return []
+    out = []
+    for crumb in values[-limit:]:
+        if not isinstance(crumb, dict):
+            continue
+        msg = crumb.get("message") or _dict(crumb.get("data")).get("url") or ""
+        out.append({"category": crumb.get("category"), "message": str(msg)[:120], "level": crumb.get("level")})
+    return out
+
+
+def _user_display(user: Any) -> Optional[str]:
+    u = _dict(user)
+    if not u:
+        return None
+    return _str_or_none(u.get("email") or u.get("username") or u.get("id") or u.get("ip_address"))
+
+
+def _event_context(obj: dict) -> dict[str, Any]:
+    """Shared rich fields for `error` and `event_alert` event bodies."""
+    tags = _tags_dict(obj.get("tags"))
+    contexts = _dict(obj.get("contexts"))
+    browser = _dict(contexts.get("browser"))
+    os_ctx = _dict(contexts.get("os"))
+    runtime = _dict(contexts.get("runtime"))
+
+    shown_tags: dict[str, str] = {}
+    for key in _PREFERRED_TAGS:
+        if key in tags and len(shown_tags) < 4:
+            shown_tags[key] = tags[key]
+    if not shown_tags:
+        for key, value in tags.items():
+            if key not in _IGNORED_TAGS and len(shown_tags) < 3:
+                shown_tags[key] = value
+
+    request = _dict(obj.get("request"))
+    return {
+        "release": _str_or_none(obj.get("release") or tags.get("release") or tags.get("sentry:release")),
+        "dist": _str_or_none(obj.get("dist")),
+        "transaction": _str_or_none(obj.get("transaction") or tags.get("transaction")),
+        "request_url": _str_or_none(request.get("url") or tags.get("url")),
+        "request_method": _str_or_none(request.get("method")),
+        "user": _user_display(obj.get("user")),
+        "browser": _str_or_none(
+            " ".join(x for x in (browser.get("name"), browser.get("version")) if x) or tags.get("browser")
+        ),
+        "os": _str_or_none(" ".join(x for x in (os_ctx.get("name"), os_ctx.get("version")) if x) or tags.get("os")),
+        "runtime": _str_or_none(" ".join(x for x in (runtime.get("name"), runtime.get("version")) if x)),
+        "tags": shown_tags,
+        "top_frame": _top_frame(obj.get("exception")),
+        "breadcrumbs": _breadcrumbs(obj.get("breadcrumbs")),
+        "sdk": _str_or_none(_dict(obj.get("sdk")).get("name")),
+    }
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 
@@ -132,6 +232,7 @@ def parse(payload: dict[str, Any], resource: str) -> ParsedEvent:
 def _parse_issue(action: str, data: dict, _resource: str = "issue") -> ParsedEvent:
     issue = _dict(data.get("issue"))
     project = _dict(issue.get("project"))
+    metadata = _dict(issue.get("metadata"))
     project_slug = _str_or_none(project.get("slug"))
     project_ref_id = _int_or_none(project.get("id"))
 
@@ -166,6 +267,12 @@ def _parse_issue(action: str, data: dict, _resource: str = "issue") -> ParsedEve
             "first_seen": issue.get("firstSeen"),
             "last_seen": issue.get("lastSeen"),
             "project_name": _str_or_none(project.get("name")),
+            "platform": issue.get("platform"),
+            "exc_type": _str_or_none(metadata.get("type")),
+            "exc_value": _str_or_none(metadata.get("value")),
+            "filename": _str_or_none(metadata.get("filename")),
+            "function": _str_or_none(metadata.get("function")),
+            "is_regression": bool(_dict(issue.get("statusDetails")).get("inRelease")) or issue.get("substatus") == "regressed",
         },
     )
 
@@ -192,6 +299,8 @@ def _parse_event_alert(action: str, data: dict, _resource: str = "event_alert") 
             "level": event.get("level") or _tag_value(event.get("tags"), "level"),
             "culprit": event.get("culprit"),
             "issue_url": event.get("issue_url"),
+            "message": event.get("message"),
+            **_event_context(event),
         },
     )
 
@@ -247,6 +356,7 @@ def _parse_error(action: str, data: dict, _resource: str = "error") -> ParsedEve
             "platform": error.get("platform"),
             "culprit": error.get("culprit"),
             "issue_url": error.get("issue_url"),
+            **_event_context(error),
         },
     )
 
