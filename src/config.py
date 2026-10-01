@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # get a 503 so Sentry retries them later instead of growing memory unbounded.
     queue_max_size: int = 1000
 
+    # Collapse repeated error/event_alert hooks for the same issue inside this
+    # window (seconds) into one summary message. 0 disables.
+    burst_window_seconds: int = 600
+
     # Sentry
     sentry_client_secret: str
 

@@ -127,6 +127,19 @@ def append_footer(original_html: str, footer: str) -> Optional[str]:
     return combined if len(combined) <= TELEGRAM_MAX_LEN else None
 
 
+def format_burst_summary(sample: ParsedEvent, count: int, window_s: float) -> str:
+    """One line for N suppressed repeats of the same issue."""
+    minutes = max(1, round(window_s / 60))
+    title_part = _link(sample.title, sample.web_url, limit=150)
+    where = ""
+    if sample.environment:
+        where = f" (<code>{_e(sample.environment)}</code>)"
+    return (
+        f"🔁 <b>+{count} more</b> event{'s' if count != 1 else ''} for {title_part}{where} "
+        f"in the last {minutes} min"
+    )
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 

@@ -15,9 +15,10 @@ from aiogram.exceptions import (
 )
 
 from .config import settings
+from .burst import BurstCollapser, Summary
 from .db import Repositories
 from .filters import skip_reason
-from .sentry.formatters import append_footer, format_event, status_footer
+from .sentry.formatters import append_footer, format_burst_summary, format_event, status_footer
 from .sentry.parser import ParsedEvent
 
 log = logging.getLogger(__name__)
@@ -178,7 +179,12 @@ async def _stamp_original(
         log.debug("Could not stamp original message %s: %s", prior["tg_message_id"], exc)
 
 
-async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
+async def send_event(
+    bot: Bot,
+    repos: Repositories,
+    event: ParsedEvent,
+    collapser: Optional[BurstCollapser] = None,
+) -> None:
     """Resolve routing and deliver the formatted event to all matched chats."""
     targets = await _resolve_targets(repos, event)
     if not targets:
@@ -197,6 +203,11 @@ async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
             log.info("Skipping chat_id=%s for %s.%s: %s", chat_id, event.resource, event.action, reason)
             await _record(repos, event, chat_id, SendResult(error=reason), text, status="skipped")
             continue
+        if collapser is not None and not collapser.check(event, chat_id):
+            await _record(
+                repos, event, chat_id, SendResult(error="collapsed into burst summary"), text, status="skipped"
+            )
+            continue
         prior: Optional[dict] = None
         if event.issue_id:
             try:
@@ -211,24 +222,71 @@ async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
             await _stamp_original(bot, repos, event, chat_id, prior)
 
 
+async def send_burst_summary(bot: Bot, repos: Repositories, summary: Summary) -> None:
+    """Post the '+N more events' line, threaded under the issue's last message."""
+    text = format_burst_summary(summary.sample, summary.count, summary.window_s)
+    prior = None
+    try:
+        prior = await repos.deliveries.last_for_issue(summary.chat_id, summary.issue_id)
+    except Exception:
+        log.exception("Thread lookup failed for burst summary")
+    result = await _send_to_chat(
+        bot, summary.chat_id, text, reply_to=prior["tg_message_id"] if prior else None
+    )
+    await _record(repos, summary.sample, summary.chat_id, result, text)
+
+
+_FLUSH_TICK_S = 15.0
+
+
 async def delivery_worker(
-    queue: "asyncio.Queue[Optional[ParsedEvent]]", bot: Bot, repos: Repositories
+    queue: "asyncio.Queue[Optional[ParsedEvent]]",
+    bot: Bot,
+    repos: Repositories,
+    collapser: Optional[BurstCollapser] = None,
 ) -> None:
     """
     Background asyncio task that consumes ParsedEvent items and delivers them.
-    Putting None into the queue triggers a clean shutdown.
+    Putting None into the queue triggers a clean shutdown. Between items it
+    periodically flushes burst summaries whose window has elapsed.
     """
-    log.info("Delivery worker started")
+    if collapser is None:
+        collapser = BurstCollapser(settings.burst_window_seconds)
+    log.info("Delivery worker started (burst window %ss)", collapser.window_s)
     while True:
-        item = await queue.get()
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=_FLUSH_TICK_S)
+        except asyncio.TimeoutError:
+            await _flush_bursts(bot, repos, collapser)
+            continue
         if item is None:
             log.info("Delivery worker: shutdown sentinel received")
             queue.task_done()
             break
         try:
-            await send_event(bot, repos, item)
+            await send_event(bot, repos, item, collapser)
         except Exception:
             log.exception("Unhandled error in delivery worker")
         finally:
             queue.task_done()
+        await _flush_bursts(bot, repos, collapser)
+    # Final flush so pending summaries are not lost on shutdown.
+    await _flush_bursts(bot, repos, collapser, force=True)
     log.info("Delivery worker stopped")
+
+
+async def _flush_bursts(
+    bot: Bot, repos: Repositories, collapser: BurstCollapser, force: bool = False
+) -> None:
+    if not collapser.enabled:
+        return
+    now = None
+    if force:
+        import time
+
+        now = time.monotonic() + collapser.window_s  # pretend every window elapsed
+    for summary in collapser.flush_due(now):
+        try:
+            await send_burst_summary(bot, repos, summary)
+        except Exception:
+            log.exception("Failed to send burst summary for chat_id=%s", summary.chat_id)
