@@ -22,8 +22,9 @@ async def test_pre_alembic_database_is_adopted(tmp_path):
     """A DB created with metadata.create_all (old versions) must upgrade cleanly."""
     path = str(tmp_path / "legacy.db")
     legacy = Database(path)
+    legacy_tables = [Base.metadata.tables[n] for n in ("routes", "projects", "environments", "seen_requests")]
     async with legacy._engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=legacy_tables))
     await legacy.close()
 
     db = Database(path)

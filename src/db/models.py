@@ -48,3 +48,28 @@ class SeenRequest(Base):
     request_id: Mapped[str] = mapped_column(String, primary_key=True)
     # Indexed so periodic purging of old rows doesn't scan the whole table.
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class Delivery(Base):
+    """One row per (event, target chat) delivery attempt — the audit trail for
+    "why didn't I get that alert" and the data source for /last and /stats."""
+
+    __tablename__ = "deliveries"
+    __table_args__ = (
+        Index("ix_deliveries_chat_created", "chat_id", "created_at"),
+        Index("ix_deliveries_status", "status"),
+        Index("ix_deliveries_issue", "chat_id", "issue_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    resource: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False, default="")
+    project: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    environment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    issue_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped
+    error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

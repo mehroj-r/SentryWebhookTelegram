@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -14,6 +15,7 @@ class ParsedEvent:
     title: str                      # human-readable summary
     web_url: Optional[str]          # link to view in Sentry UI
     actor: Optional[str] = None     # who performed the action (resolved/assigned/...)
+    issue_id: Optional[str] = None  # Sentry issue id, used to thread follow-up messages
     extra: dict[str, Any] = field(default_factory=dict)  # additional display fields
 
 
@@ -59,6 +61,25 @@ def _split_project_ref(raw: Any) -> tuple[Optional[str], Optional[int]]:
         return None, int(text)
     except ValueError:
         return text, None
+
+
+_ISSUE_URL_RE = re.compile(r"/issues/(\d+)/?")
+
+
+def _issue_id_from(*candidates: Any) -> Optional[str]:
+    """First usable issue id: a direct id, or one embedded in an issue URL."""
+    for value in candidates:
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return str(value)
+        text = str(value).strip()
+        if text.isdigit():
+            return text
+        match = _ISSUE_URL_RE.search(text)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _actor_display(actor: Any) -> Optional[str]:
@@ -132,6 +153,7 @@ def _parse_issue(action: str, data: dict, _resource: str = "issue") -> ParsedEve
         environment=None,  # issue webhooks don't carry environment
         title=_str_or_none(issue.get("title")) or "(no title)",
         web_url=_str_or_none(issue.get("web_url") or issue.get("permalink")),
+        issue_id=_issue_id_from(issue.get("id")),
         extra={
             "short_id": issue.get("shortId"),
             "status": issue.get("status"),
@@ -163,6 +185,7 @@ def _parse_event_alert(action: str, data: dict, _resource: str = "event_alert") 
         environment=environment,
         title=_str_or_none(event.get("title") or data.get("triggered_rule")) or "(event alert)",
         web_url=_str_or_none(event.get("web_url") or event.get("url")),
+        issue_id=_issue_id_from(event.get("issue_id"), event.get("issue_url"), event.get("web_url")),
         extra={
             "triggered_rule": data.get("triggered_rule"),
             "platform": event.get("platform"),
@@ -216,6 +239,7 @@ def _parse_error(action: str, data: dict, _resource: str = "error") -> ParsedEve
         environment=environment,
         title=_str_or_none(error.get("title")) or "(error)",
         web_url=_str_or_none(error.get("web_url") or error.get("url")),
+        issue_id=_issue_id_from(error.get("issue_id"), error.get("issue_url"), error.get("web_url")),
         extra={
             "event_id": error.get("event_id"),
             "message": error.get("message"),
@@ -237,6 +261,7 @@ def _parse_comment(action: str, data: dict, _resource: str = "comment") -> Parse
         environment=None,
         title=f"Comment on issue #{issue_id}" if issue_id else "Comment",
         web_url=None,
+        issue_id=_issue_id_from(issue_id),
         extra={
             "comment": data.get("comment"),
             "comment_id": data.get("comment_id"),

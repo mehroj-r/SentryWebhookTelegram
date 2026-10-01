@@ -8,7 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import Environment, Project, Route, SeenRequest
+from .models import Delivery, Environment, Project, Route, SeenRequest
 
 
 def _utcnow() -> datetime:
@@ -247,6 +247,115 @@ class RouteRepository(BaseRepository):
             return list(rows)
 
 
+# ── Delivery log ───────────────────────────────────────────────────────────────
+
+
+class DeliveryRepository(BaseRepository):
+    """Audit trail of what was sent where."""
+
+    async def record(
+        self,
+        *,
+        chat_id: int,
+        resource: str,
+        action: str,
+        project: Optional[str],
+        environment: Optional[str],
+        issue_id: Optional[str],
+        title: str,
+        status: str,
+        error: Optional[str] = None,
+        tg_message_id: Optional[int] = None,
+    ) -> int:
+        async with self._sessionmaker() as session:
+            row = Delivery(
+                created_at=_utcnow(),
+                chat_id=chat_id,
+                resource=resource,
+                action=action or "",
+                project=project,
+                environment=environment,
+                issue_id=issue_id,
+                title=title[:500],
+                status=status,
+                error=(error or None) and str(error)[:1000],
+                tg_message_id=tg_message_id,
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def recent_for_chat(self, chat_id: int, limit: int = 10) -> list[dict]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(Delivery)
+                    .where(Delivery.chat_id == chat_id)
+                    .order_by(Delivery.created_at.desc(), Delivery.id.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return [_delivery_dict(r) for r in rows]
+
+    async def recent(self, limit: int = 50, status: Optional[str] = None) -> list[dict]:
+        async with self._sessionmaker() as session:
+            stmt = select(Delivery).order_by(Delivery.created_at.desc(), Delivery.id.desc()).limit(limit)
+            if status:
+                stmt = stmt.where(Delivery.status == status)
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_delivery_dict(r) for r in rows]
+
+    async def last_message_for_issue(self, chat_id: int, issue_id: str) -> Optional[int]:
+        """Telegram message id of the most recent successful post about an issue."""
+        async with self._sessionmaker() as session:
+            return await session.scalar(
+                select(Delivery.tg_message_id)
+                .where(
+                    Delivery.chat_id == chat_id,
+                    Delivery.issue_id == issue_id,
+                    Delivery.status == "sent",
+                    Delivery.tg_message_id.is_not(None),
+                )
+                .order_by(Delivery.created_at.desc(), Delivery.id.desc())
+                .limit(1)
+            )
+
+    async def count_by_status(self, since: datetime) -> dict[str, int]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(Delivery.status, func.count())
+                    .where(Delivery.created_at >= since)
+                    .group_by(Delivery.status)
+                )
+            ).all()
+            return {status: count for status, count in rows}
+
+    async def purge_older_than(self, max_age: timedelta) -> int:
+        cutoff = _utcnow() - max_age
+        async with self._sessionmaker() as session:
+            result = await session.execute(delete(Delivery).where(Delivery.created_at < cutoff))
+            await session.commit()
+            return result.rowcount or 0
+
+
+def _delivery_dict(r: Delivery) -> dict:
+    return {
+        "id": r.id,
+        "created_at": r.created_at,
+        "chat_id": r.chat_id,
+        "resource": r.resource,
+        "action": r.action,
+        "project": r.project,
+        "environment": r.environment,
+        "issue_id": r.issue_id,
+        "title": r.title,
+        "status": r.status,
+        "error": r.error,
+        "tg_message_id": r.tg_message_id,
+    }
+
+
 # ── Container ──────────────────────────────────────────────────────────────────
 
 
@@ -258,3 +367,4 @@ class Repositories:
         self.projects = ProjectRepository(sessionmaker)
         self.environments = EnvironmentRepository(sessionmaker)
         self.routes = RouteRepository(sessionmaker)
+        self.deliveries = DeliveryRepository(sessionmaker)

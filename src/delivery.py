@@ -56,15 +56,27 @@ async def _resolve_chats(repos: Repositories, event: ParsedEvent) -> list[int]:
     return []
 
 
-async def _send_to_chat(bot: Bot, chat_id: int, text: str) -> bool:
+class SendResult:
+    __slots__ = ("message_id", "error")
+
+    def __init__(self, message_id: Optional[int] = None, error: Optional[str] = None) -> None:
+        self.message_id = message_id
+        self.error = error
+
+    @property
+    def ok(self) -> bool:
+        return self.message_id is not None
+
+
+async def _send_to_chat(bot: Bot, chat_id: int, text: str) -> SendResult:
     """
     Send a message, honouring Telegram rate limits and retrying transient
-    failures with exponential backoff. Returns True on success.
+    failures with exponential backoff.
     """
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            await bot.send_message(chat_id, text)
-            return True
+            sent = await bot.send_message(chat_id, text)
+            return SendResult(message_id=sent.message_id)
         except TelegramRetryAfter as exc:
             wait = min(float(exc.retry_after), 120.0)
             log.warning("Rate limited on chat_id=%s; retrying after %.1f s", chat_id, wait)
@@ -72,7 +84,7 @@ async def _send_to_chat(bot: Bot, chat_id: int, text: str) -> bool:
         except (TelegramNetworkError, TelegramServerError) as exc:
             if attempt == _MAX_ATTEMPTS:
                 log.error("Giving up on chat_id=%s after %d attempts: %s", chat_id, attempt, exc)
-                return False
+                return SendResult(error=f"{type(exc).__name__}: {exc}")
             wait = min(_BACKOFF_BASE_S * 2 ** (attempt - 1), _BACKOFF_MAX_S)
             log.warning(
                 "Transient Telegram error for chat_id=%s (attempt %d/%d): %s; retry in %.0fs",
@@ -82,15 +94,33 @@ async def _send_to_chat(bot: Bot, chat_id: int, text: str) -> bool:
         except TelegramForbiddenError as exc:
             # Bot was blocked / kicked from the chat — retrying is pointless.
             log.warning("Not allowed to message chat_id=%s (%s); skipping", chat_id, exc)
-            return False
+            return SendResult(error=f"forbidden: {exc}")
         except TelegramBadRequest as exc:
             # Permanent: chat not found, malformed HTML, etc.
             log.error("Telegram rejected message for chat_id=%s: %s", chat_id, exc)
-            return False
-        except Exception:
+            return SendResult(error=f"bad request: {exc}")
+        except Exception as exc:
             log.exception("Unexpected error sending to chat_id=%s", chat_id)
-            return False
-    return False
+            return SendResult(error=f"{type(exc).__name__}: {exc}")
+    return SendResult(error="rate limited: retries exhausted")
+
+
+async def _record(repos: Repositories, event: ParsedEvent, chat_id: int, result: SendResult) -> None:
+    try:
+        await repos.deliveries.record(
+            chat_id=chat_id,
+            resource=event.resource,
+            action=event.action,
+            project=event.project_slug or (str(event.project_ref_id) if event.project_ref_id else None),
+            environment=event.environment,
+            issue_id=event.issue_id,
+            title=event.title,
+            status="sent" if result.ok else "failed",
+            error=result.error,
+            tg_message_id=result.message_id,
+        )
+    except Exception:
+        log.exception("Could not record delivery for chat_id=%s", chat_id)
 
 
 async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
@@ -108,7 +138,8 @@ async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
 
     text = format_event(event)
     for chat_id in chats:
-        await _send_to_chat(bot, chat_id, text)
+        result = await _send_to_chat(bot, chat_id, text)
+        await _record(repos, event, chat_id, result)
 
 
 async def delivery_worker(

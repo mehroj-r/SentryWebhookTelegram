@@ -69,6 +69,7 @@ async def cmd_start(message: Message) -> None:
         "• /subscribe — route Sentry events to this chat\n"
         "• /routes — view and remove routing rules for this chat\n"
         "• /add_route &lt;slug&gt; [env] — add a route by project slug\n"
+        "• /last — show the last events delivered to this chat\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
         "• /help — show this message",
     )
@@ -88,6 +89,29 @@ async def cmd_routes(message: Message, repos: Repositories) -> None:
         )
         return
     await message.answer(_ROUTES_PROMPT, reply_markup=routes_keyboard(routes))
+
+
+_STATUS_ICON = {"sent": "✅", "failed": "❌", "skipped": "⏭"}
+
+
+@public_router.message(Command("last"))
+async def cmd_last(message: Message, repos: Repositories) -> None:
+    rows = await repos.deliveries.recent_for_chat(message.chat.id, limit=10)
+    if not rows:
+        await message.answer("Nothing has been delivered to this chat yet.")
+        return
+    lines = ["<b>Last deliveries to this chat:</b>"]
+    for r in rows:
+        when = r["created_at"].strftime("%m-%d %H:%M") if r["created_at"] else "?"
+        icon = _STATUS_ICON.get(r["status"], "•")
+        where = escape(r["project"] or "?")
+        if r["environment"]:
+            where += f"/{escape(r['environment'])}"
+        line = f"{icon} <code>{when}</code> {escape(r['resource'])}.{escape(r['action'])} {where}: {escape(r['title'][:60])}"
+        if r["error"]:
+            line += f"\n    ↳ <i>{escape(r['error'][:120])}</i>"
+        lines.append(line)
+    await message.answer("\n".join(lines))
 
 
 # ── admin router — gated by AdminMiddleware ────────────────────────────────────
