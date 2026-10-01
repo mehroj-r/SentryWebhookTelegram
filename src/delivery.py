@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from aiogram import Bot
+from aiogram.types import ReplyParameters
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
@@ -15,7 +16,7 @@ from aiogram.exceptions import (
 
 from .config import settings
 from .db import Repositories
-from .sentry.formatters import format_event
+from .sentry.formatters import append_footer, format_event, status_footer
 from .sentry.parser import ParsedEvent
 
 log = logging.getLogger(__name__)
@@ -68,14 +69,22 @@ class SendResult:
         return self.message_id is not None
 
 
-async def _send_to_chat(bot: Bot, chat_id: int, text: str) -> SendResult:
+async def _send_to_chat(
+    bot: Bot, chat_id: int, text: str, reply_to: Optional[int] = None
+) -> SendResult:
     """
     Send a message, honouring Telegram rate limits and retrying transient
-    failures with exponential backoff.
+    failures with exponential backoff. `reply_to` threads the message under an
+    earlier post (the original is allowed to be gone).
     """
+    reply = (
+        ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
+        if reply_to
+        else None
+    )
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            sent = await bot.send_message(chat_id, text)
+            sent = await bot.send_message(chat_id, text, reply_parameters=reply)
             return SendResult(message_id=sent.message_id)
         except TelegramRetryAfter as exc:
             wait = min(float(exc.retry_after), 120.0)
@@ -105,7 +114,9 @@ async def _send_to_chat(bot: Bot, chat_id: int, text: str) -> SendResult:
     return SendResult(error="rate limited: retries exhausted")
 
 
-async def _record(repos: Repositories, event: ParsedEvent, chat_id: int, result: SendResult) -> None:
+async def _record(
+    repos: Repositories, event: ParsedEvent, chat_id: int, result: SendResult, text: str
+) -> None:
     try:
         await repos.deliveries.record(
             chat_id=chat_id,
@@ -118,9 +129,33 @@ async def _record(repos: Repositories, event: ParsedEvent, chat_id: int, result:
             status="sent" if result.ok else "failed",
             error=result.error,
             tg_message_id=result.message_id,
+            text=text if result.ok else None,
         )
     except Exception:
         log.exception("Could not record delivery for chat_id=%s", chat_id)
+
+
+async def _stamp_original(
+    bot: Bot, repos: Repositories, event: ParsedEvent, chat_id: int, prior: dict
+) -> None:
+    """
+    Append a status footer (e.g. "✅ RESOLVED by Alice") to the message that
+    first announced the issue, so the chat shows the issue's current state at
+    a glance. Best effort: edits of old/deleted messages simply fail quietly.
+    """
+    footer = status_footer(event)
+    if not footer or not prior.get("text") or not prior.get("tg_message_id"):
+        return
+    new_text = append_footer(prior["text"], footer)
+    if new_text is None:
+        return
+    try:
+        await bot.edit_message_text(new_text, chat_id=chat_id, message_id=prior["tg_message_id"])
+        await repos.deliveries.update_text(prior["id"], new_text)
+    except TelegramRetryAfter as exc:
+        log.debug("Rate limited while stamping message %s; skipping", prior["tg_message_id"])
+    except Exception as exc:  # noqa: BLE001 — purely cosmetic, never fail delivery
+        log.debug("Could not stamp original message %s: %s", prior["tg_message_id"], exc)
 
 
 async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
@@ -138,8 +173,18 @@ async def send_event(bot: Bot, repos: Repositories, event: ParsedEvent) -> None:
 
     text = format_event(event)
     for chat_id in chats:
-        result = await _send_to_chat(bot, chat_id, text)
-        await _record(repos, event, chat_id, result)
+        prior: Optional[dict] = None
+        if event.issue_id:
+            try:
+                prior = await repos.deliveries.last_for_issue(chat_id, event.issue_id)
+            except Exception:
+                log.exception("Thread lookup failed for chat_id=%s", chat_id)
+        result = await _send_to_chat(
+            bot, chat_id, text, reply_to=prior["tg_message_id"] if prior else None
+        )
+        await _record(repos, event, chat_id, result, text)
+        if prior and result.ok:
+            await _stamp_original(bot, repos, event, chat_id, prior)
 
 
 async def delivery_worker(

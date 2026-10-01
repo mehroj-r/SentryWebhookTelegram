@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -73,3 +73,5 @@ class Delivery(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped
     error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # The HTML we sent, kept so later lifecycle events can edit the message.
+    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

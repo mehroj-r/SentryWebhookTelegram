@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -266,6 +266,7 @@ class DeliveryRepository(BaseRepository):
         status: str,
         error: Optional[str] = None,
         tg_message_id: Optional[int] = None,
+        text: Optional[str] = None,
     ) -> int:
         async with self._sessionmaker() as session:
             row = Delivery(
@@ -280,6 +281,7 @@ class DeliveryRepository(BaseRepository):
                 status=status,
                 error=(error or None) and str(error)[:1000],
                 tg_message_id=tg_message_id,
+                text=text,
             )
             session.add(row)
             await session.commit()
@@ -307,9 +309,14 @@ class DeliveryRepository(BaseRepository):
 
     async def last_message_for_issue(self, chat_id: int, issue_id: str) -> Optional[int]:
         """Telegram message id of the most recent successful post about an issue."""
+        row = await self.last_for_issue(chat_id, issue_id)
+        return row["tg_message_id"] if row else None
+
+    async def last_for_issue(self, chat_id: int, issue_id: str) -> Optional[dict]:
+        """Most recent successfully sent delivery about an issue in a chat."""
         async with self._sessionmaker() as session:
-            return await session.scalar(
-                select(Delivery.tg_message_id)
+            row = await session.scalar(
+                select(Delivery)
                 .where(
                     Delivery.chat_id == chat_id,
                     Delivery.issue_id == issue_id,
@@ -319,6 +326,14 @@ class DeliveryRepository(BaseRepository):
                 .order_by(Delivery.created_at.desc(), Delivery.id.desc())
                 .limit(1)
             )
+            return _delivery_dict(row) if row else None
+
+    async def update_text(self, delivery_id: int, text: str) -> None:
+        async with self._sessionmaker() as session:
+            await session.execute(
+                update(Delivery).where(Delivery.id == delivery_id).values(text=text)
+            )
+            await session.commit()
 
     async def count_by_status(self, since: datetime) -> dict[str, int]:
         async with self._sessionmaker() as session:
@@ -353,6 +368,7 @@ def _delivery_dict(r: Delivery) -> dict:
         "status": r.status,
         "error": r.error,
         "tg_message_id": r.tg_message_id,
+        "text": r.text,
     }
 
 

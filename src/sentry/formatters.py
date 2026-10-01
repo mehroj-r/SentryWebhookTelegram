@@ -104,6 +104,29 @@ def _clamp(text: str) -> str:
     return "\n".join(out)
 
 
+# Issue lifecycle actions that should be stamped onto the original message.
+STATUS_ACTIONS = frozenset({"resolved", "unresolved", "archived", "ignored", "assigned"})
+
+
+def status_footer(event: ParsedEvent) -> Optional[str]:
+    """One-line status stamp for the original message, or None if not applicable."""
+    if event.resource != "issue" or event.action not in STATUS_ACTIONS:
+        return None
+    emoji = _ACTION_EMOJI.get(event.action, "🔔")
+    parts = [f"{emoji} <b>{_e(event.action.upper())}</b>"]
+    if event.action == "assigned" and event.extra.get("assigned_to"):
+        parts.append(f"to {_e(_truncate(str(event.extra['assigned_to']), 60))}")
+    if event.actor:
+        parts.append(f"by {_e(event.actor)}")
+    return " ".join(parts)
+
+
+def append_footer(original_html: str, footer: str) -> Optional[str]:
+    """Original message plus a footer line; None if it would exceed Telegram's limit."""
+    combined = f"{original_html}\n{footer}"
+    return combined if len(combined) <= TELEGRAM_MAX_LEN else None
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 
