@@ -73,6 +73,7 @@ async def cmd_start(message: Message) -> None:
         "• /add_route &lt;slug&gt; [env] — add a route by project slug\n"
         "• /filter &lt;slug|all&gt; level=&lt;min&gt; actions=&lt;a,b&gt; — noise control\n"
         "• /mute &lt;30m|2h|1d&gt; [slug] and /unmute [slug] — pause alerts\n"
+        "• /digest &lt;slug|all&gt; &lt;minutes|off&gt; — batch events into periodic digests\n"
         "• /last — show the last events delivered to this chat\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
         "• /help — show this message",
@@ -307,6 +308,35 @@ async def cmd_mute(message: Message, repos: Repositories) -> None:
     await message.answer(
         f"🔇 Muted {n} route(s) until <code>{until:%Y-%m-%d %H:%M} UTC</code>. Use /unmute to resume."
     )
+
+
+@admin_router.message(Command("digest"))
+async def cmd_digest(message: Message, repos: Repositories) -> None:
+    """/digest <slug|all> <minutes|off> — switch routes between instant and digest mode."""
+    parts = (message.text or "").split()[1:]
+    usage = "Usage: <code>/digest &lt;project-slug|all&gt; &lt;minutes|off&gt;</code>  (e.g. /digest all 60)"
+    if len(parts) != 2:
+        await message.answer(usage)
+        return
+    project: Optional[str] = None if parts[0].lower() == "all" else parts[0]
+    if project and not _SLUG_RE.match(project):
+        await message.answer(usage)
+        return
+    if parts[1].lower() == "off":
+        minutes: Optional[int] = None
+    else:
+        if not parts[1].isdigit() or not (1 <= int(parts[1]) <= 24 * 60):
+            await message.answer("Minutes must be between 1 and 1440.\n" + usage)
+            return
+        minutes = int(parts[1])
+    n = await repos.routes.set_filters(message.chat.id, project, digest_minutes=minutes)
+    if n == 0:
+        await message.answer("No matching routes in this chat.")
+        return
+    if minutes is None:
+        await message.answer(f"⚡ {n} route(s) switched back to instant delivery.")
+    else:
+        await message.answer(f"📰 {n} route(s) will now send a digest every {minutes} min.")
 
 
 @admin_router.message(Command("unmute"))

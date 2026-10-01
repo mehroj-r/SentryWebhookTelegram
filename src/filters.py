@@ -89,6 +89,8 @@ def describe_filters(route: dict) -> str:
         parts.append(f"[≥{route['min_level']}]")
     if route.get("actions"):
         parts.append(f"[{route['actions']}]")
+    if route.get("digest_minutes"):
+        parts.append(f"📰{route['digest_minutes']}m")
     muted_until = route.get("muted_until")
     if muted_until is not None:
         if muted_until.tzinfo is None:

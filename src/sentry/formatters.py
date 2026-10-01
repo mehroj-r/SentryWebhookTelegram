@@ -140,6 +140,40 @@ def format_burst_summary(sample: ParsedEvent, count: int, window_s: float) -> st
     )
 
 
+def format_digest(items: list[dict], max_groups: int = 25) -> str:
+    """
+    One message summarising parked events, grouped by issue (or title when
+    there is no issue id), most frequent first.
+    """
+    groups: dict[tuple, dict] = {}
+    for it in items:
+        key = (it.get("project"), it.get("issue_id") or it.get("title"))
+        g = groups.setdefault(key, {"count": 0, "item": it, "actions": set()})
+        g["count"] += 1
+        g["actions"].add(it.get("action") or "")
+        # keep the most recent representative
+        g["item"] = it
+    ordered = sorted(groups.values(), key=lambda g: -g["count"])
+
+    total = len(items)
+    header = f"📰 <b>Digest</b>: {total} event{'s' if total != 1 else ''} across {len(groups)} issue{'s' if len(groups) != 1 else ''}"
+    lines = [header]
+    for g in ordered[:max_groups]:
+        it = g["item"]
+        level_emoji = _LEVEL_EMOJI.get(str(it.get("level") or ""), "•")
+        where = _e(it.get("project") or "?")
+        if it.get("environment"):
+            where += f"/{_e(it['environment'])}"
+        actions = ",".join(sorted(a for a in g["actions"] if a))
+        suffix = f" <i>{_e(actions)}</i>" if actions and actions != "created" else ""
+        lines.append(
+            f"{level_emoji} ×{g['count']} <code>{where}</code> {_link(it.get('title') or '(no title)', it.get('web_url'), limit=120)}{suffix}"
+        )
+    if len(ordered) > max_groups:
+        lines.append(f"… and {len(ordered) - max_groups} more issues")
+    return _clamp("\n".join(lines))
+
+
 # ── public API ─────────────────────────────────────────────────────────────────
 
 

@@ -8,7 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import Delivery, Environment, Project, Route, SeenRequest
+from .models import Delivery, DigestItem, Environment, Project, Route, SeenRequest
 
 
 def _utcnow() -> datetime:
@@ -220,6 +220,7 @@ class RouteRepository(BaseRepository):
         min_level: Optional[str] = ...,  # type: ignore[assignment]
         actions: Optional[str] = ...,  # type: ignore[assignment]
         muted_until: Optional[datetime] = ...,  # type: ignore[assignment]
+        digest_minutes: Optional[int] = ...,  # type: ignore[assignment]
     ) -> int:
         """
         Update filter columns on every route of `chat_id` (optionally only
@@ -233,6 +234,8 @@ class RouteRepository(BaseRepository):
             values["actions"] = actions
         if muted_until is not ...:
             values["muted_until"] = muted_until
+        if digest_minutes is not ...:
+            values["digest_minutes"] = digest_minutes
         if not values:
             return 0
         stmt = update(Route).where(Route.chat_id == chat_id).values(**values)
@@ -292,6 +295,7 @@ def _route_dict(r: Route) -> dict:
         "min_level": r.min_level,
         "actions": r.actions,
         "muted_until": r.muted_until,
+        "digest_minutes": r.digest_minutes,
     }
 
 
@@ -420,6 +424,102 @@ def _delivery_dict(r: Delivery) -> dict:
     }
 
 
+# ── Digest items ───────────────────────────────────────────────────────────────
+
+
+class DigestRepository(BaseRepository):
+    """Events parked for a chat's next digest."""
+
+    async def add(
+        self,
+        *,
+        chat_id: int,
+        route_id: int,
+        project: Optional[str],
+        environment: Optional[str],
+        issue_id: Optional[str],
+        resource: str,
+        action: str,
+        level: Optional[str],
+        title: str,
+        web_url: Optional[str],
+    ) -> None:
+        async with self._sessionmaker() as session:
+            session.add(
+                DigestItem(
+                    created_at=_utcnow(),
+                    chat_id=chat_id,
+                    route_id=route_id,
+                    project=project,
+                    environment=environment,
+                    issue_id=issue_id,
+                    resource=resource,
+                    action=action or "",
+                    level=level,
+                    title=title[:300],
+                    web_url=web_url,
+                )
+            )
+            await session.commit()
+
+    async def due_chats(self, now: Optional[datetime] = None) -> list[int]:
+        """
+        Chats that have at least one parked item older than its route's
+        digest period. The whole backlog for such a chat is then flushed.
+        """
+        now = now or _utcnow()
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(DigestItem.chat_id, DigestItem.created_at, Route.digest_minutes)
+                    .join(Route, Route.id == DigestItem.route_id, isouter=True)
+                )
+            ).all()
+        due: list[int] = []
+        for chat_id, created_at, minutes in rows:
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            period = timedelta(minutes=minutes or 0)
+            if created_at + period <= now and chat_id not in due:
+                due.append(chat_id)
+        return due
+
+    async def pop_for_chat(self, chat_id: int) -> list[dict]:
+        """Return and delete every parked item for a chat."""
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(DigestItem).where(DigestItem.chat_id == chat_id).order_by(DigestItem.created_at)
+                )
+            ).scalars().all()
+            items = [
+                {
+                    "created_at": r.created_at,
+                    "project": r.project,
+                    "environment": r.environment,
+                    "issue_id": r.issue_id,
+                    "resource": r.resource,
+                    "action": r.action,
+                    "level": r.level,
+                    "title": r.title,
+                    "web_url": r.web_url,
+                }
+                for r in rows
+            ]
+            if rows:
+                await session.execute(delete(DigestItem).where(DigestItem.chat_id == chat_id))
+                await session.commit()
+            return items
+
+    async def pending_count(self, chat_id: int) -> int:
+        async with self._sessionmaker() as session:
+            return (
+                await session.scalar(
+                    select(func.count()).select_from(DigestItem).where(DigestItem.chat_id == chat_id)
+                )
+            ) or 0
+
+
 # ── Container ──────────────────────────────────────────────────────────────────
 
 
@@ -432,3 +532,4 @@ class Repositories:
         self.environments = EnvironmentRepository(sessionmaker)
         self.routes = RouteRepository(sessionmaker)
         self.deliveries = DeliveryRepository(sessionmaker)
+        self.digests = DigestRepository(sessionmaker)

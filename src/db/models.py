@@ -29,6 +29,8 @@ class Route(Base):
     min_level: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     actions: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # NULL = deliver instantly; N = collect and send one digest every N minutes.
+    digest_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 class Project(Base):
@@ -80,3 +82,23 @@ class Delivery(Base):
     tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     # The HTML we sent, kept so later lifecycle events can edit the message.
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class DigestItem(Base):
+    """An event waiting to be included in a chat's next digest message."""
+
+    __tablename__ = "digest_items"
+    __table_args__ = (Index("ix_digest_items_chat", "chat_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    route_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    project: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    environment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    issue_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    resource: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False, default="")
+    level: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    title: Mapped[str] = mapped_column(String, nullable=False, default="")
+    web_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
