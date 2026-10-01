@@ -49,5 +49,5 @@ async def test_resolve_chats_exact_then_wildcard_then_all(repos):
 async def test_project_upsert_preserves_values(repos):
     await repos.projects.upsert("p", ref_id=5, name="Proj")
     await repos.projects.upsert("p", ref_id=None, name=None)
-    assert await repos.projects.list_all() == [{"slug": "p", "ref_id": 5, "name": "Proj"}]
+    assert await repos.projects.list_all() == [{"slug": "p", "ref_id": 5, "name": "Proj", "org": None}]
     assert await repos.projects.slug_for_ref_id(5) == "p"

@@ -60,13 +60,19 @@ async def _resolve_targets(repos: Repositories, event: ParsedEvent) -> dict[int,
     3. DEFAULT_CHAT_ID fallback
     """
     candidates: list[str] = []
+    slugs: list[str] = []
     if event.project_slug:
-        candidates.append(event.project_slug)
+        slugs.append(event.project_slug)
     if event.project_ref_id is not None:
         learned = await repos.projects.slug_for_ref_id(event.project_ref_id)
-        if learned and learned not in candidates:
-            candidates.append(learned)
-        candidates.append(str(event.project_ref_id))
+        if learned and learned not in slugs:
+            slugs.append(learned)
+        slugs.append(str(event.project_ref_id))
+    for slug in slugs:
+        # "org/slug" routes are most specific; plain slug routes still match.
+        if event.org:
+            candidates.append(f"{event.org}/{slug}")
+        candidates.append(slug)
 
     for project in candidates:
         routes = await repos.routes.resolve_routes(project, event.environment)

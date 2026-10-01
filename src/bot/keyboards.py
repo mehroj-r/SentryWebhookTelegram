@@ -48,8 +48,11 @@ def _button_label(text: str, limit: int = 60) -> str:
 
 def projects_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    orgs = {p.get("org") for p in projects if p.get("org")}
     for p in projects:
         label = p.get("name") or p["slug"]
+        if len(orgs) > 1 and p.get("org"):
+            label = f"{p['org']}/{label}"
         builder.button(
             text=_button_label(label),
             callback_data=ProjectCallback(key=key_for(p["slug"])),

@@ -55,7 +55,7 @@ async def test_valid_event_enqueued_and_project_learned(client, repos):
     assert resp.status == 200
     assert client.app[QUEUE_KEY].qsize() == 1
     await asyncio.gather(*client.app[BG_TASKS_KEY])
-    assert await repos.projects.list_all() == [{"slug": "backend", "ref_id": 1, "name": "B"}]
+    assert await repos.projects.list_all() == [{"slug": "backend", "ref_id": 1, "name": "B", "org": None}]
 
 
 async def test_duplicate_request_id_skipped(client):

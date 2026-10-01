@@ -5,6 +5,7 @@ os.environ.setdefault("BOT_TOKEN", "123:TEST")
 os.environ.setdefault("WEBHOOK_SECRET_TOKEN", "test_secret")
 os.environ.setdefault("WEBHOOK_BASE_URL", "https://example.test/")
 os.environ.setdefault("SENTRY_CLIENT_SECRET", "sentry_secret")
+os.environ.setdefault("SENTRY_CLIENT_SECRETS", "acme:acme_secret")
 os.environ.setdefault("ADMIN_IDS", "1,2")
 os.environ.setdefault("DB_PATH", ":memory:")
 

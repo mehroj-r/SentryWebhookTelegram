@@ -12,7 +12,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from .config import settings
 from .db import Repositories
 from .sentry.parser import ParsedEvent, parse as parse_sentry_event
-from .sentry.signature import verify_signature
+from .sentry.signature import verify_any
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,8 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
 
     # 2. Verify HMAC-SHA256 signature
     sig = request.headers.get("Sentry-Hook-Signature", "")
-    if not verify_signature(raw_body, sig, settings.sentry_client_secret):
+    secret_label = verify_any(raw_body, sig, settings.all_sentry_secrets)
+    if secret_label is None:
         log.warning("Rejected Sentry request with invalid signature from %s", request.remote)
         return web.Response(status=401, text="Invalid signature")
 
@@ -88,17 +89,37 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
         log.exception("Failed to parse Sentry event resource=%s", resource)
         return web.Response(status=200, text="ok")
 
-    # 7. Enqueue — this is the fast-ack point
+    # 7. Attribute the event to an organisation (multi-org deployments)
+    await _attach_org(repos, event, secret_label)
+
+    # 8. Enqueue — this is the fast-ack point
     try:
         queue.put_nowait(event)
     except asyncio.QueueFull:
         log.error("Delivery queue full; asking Sentry to retry")
         return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
 
-    # 8. Best-effort metadata learning in the background
+    # 9. Best-effort metadata learning in the background
     _spawn(app, _learn_project(repos, event, payload))
 
     return web.Response(status=200, text="ok")
+
+
+async def _attach_org(repos: Repositories, event: ParsedEvent, secret_label: str) -> None:
+    """
+    Fill event.org: the installation's organisation slug if we learned it from
+    an `installation.created` hook, else the label of the secret that matched
+    (meaningful when several secrets are configured).
+    """
+    if event.org:
+        return
+    if event.installation_uuid:
+        try:
+            event.org = await repos.installations.org_for(event.installation_uuid)
+        except Exception:
+            log.debug("Installation lookup failed", exc_info=True)
+    if not event.org and secret_label != "default":
+        event.org = secret_label
 
 
 async def _learn_project(
@@ -109,6 +130,13 @@ async def _learn_project(
     can list them without the user needing to type slugs manually.
     """
     try:
+        if event.installation_uuid:
+            await repos.installations.upsert(
+                event.installation_uuid,
+                org_slug=event.org if event.resource == "installation" else None,
+                app_slug=event.extra.get("app_slug") if event.resource == "installation" else None,
+                status=event.extra.get("status") if event.resource == "installation" else None,
+            )
         slug = event.project_slug
         if not slug:
             return
@@ -122,7 +150,7 @@ async def _learn_project(
                 if isinstance(proj, dict):
                     name = proj.get("name") or proj.get("slug")
                     break
-        await repos.projects.upsert(slug, event.project_ref_id, name)
+        await repos.projects.upsert(slug, event.project_ref_id, name, org=event.org)
         if event.environment:
             await repos.environments.register(slug, event.environment)
     except Exception:

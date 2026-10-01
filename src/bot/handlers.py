@@ -28,7 +28,8 @@ from .middlewares import AdminMiddleware
 log = logging.getLogger(__name__)
 
 # Sentry slugs: lowercase letters, digits, '-' and '_' (we're lenient on case).
-_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,64}$")
+# Project key: "slug" or "org/slug" (multi-org deployments).
+_SLUG_RE = re.compile(r"^(?:[A-Za-z0-9_\-.]{1,64}/)?[A-Za-z0-9_\-.]{1,64}$")
 _ROUTES_PROMPT = "Routes for this chat — tap a button to remove it:"
 
 

@@ -180,7 +180,10 @@ def format_digest(items: list[dict], max_groups: int = 25) -> str:
 def format_event(event: ParsedEvent) -> str:
     """Return an HTML-formatted Telegram message for a ParsedEvent."""
     fn = _FORMATTERS.get(event.resource, _format_generic)
-    return _clamp(fn(event))
+    text = fn(event)
+    if event.org and event.resource != "installation":
+        text = f"<code>[{_e(event.org)}]</code> {text}"
+    return _clamp(text)
 
 
 def _context_lines(ex: dict) -> list[str]:

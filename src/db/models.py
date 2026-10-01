@@ -37,6 +37,7 @@ class Project(Base):
     __tablename__ = "projects"
 
     slug: Mapped[str] = mapped_column(String, primary_key=True)
+    org: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ref_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
     name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -102,3 +103,17 @@ class DigestItem(Base):
     level: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
     web_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+
+class Installation(Base):
+    """A Sentry integration installation (one per organisation that installed us)."""
+
+    __tablename__ = "installations"
+
+    uuid: Mapped[str] = mapped_column(String, primary_key=True)
+    org_slug: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    app_slug: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    secret_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

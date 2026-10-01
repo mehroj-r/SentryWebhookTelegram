@@ -16,6 +16,8 @@ class ParsedEvent:
     web_url: Optional[str]          # link to view in Sentry UI
     actor: Optional[str] = None     # who performed the action (resolved/assigned/...)
     issue_id: Optional[str] = None  # Sentry issue id, used to thread follow-up messages
+    org: Optional[str] = None       # organisation slug / secret label (multi-org deployments)
+    installation_uuid: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)  # additional display fields
 
 
@@ -225,6 +227,10 @@ def parse(payload: dict[str, Any], resource: str) -> ParsedEvent:
     fn = parsers.get(resource, _parse_generic)
     event = fn(action, data, resource)
     event.actor = actor
+    event.installation_uuid = _str_or_none(_dict(payload.get("installation")).get("uuid"))
+    if resource == "installation":
+        event.org = _str_or_none(event.extra.get("org_slug"))
+        event.installation_uuid = event.installation_uuid or _str_or_none(event.extra.get("uuid"))
     return event
 
 

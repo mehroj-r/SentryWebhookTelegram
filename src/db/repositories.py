@@ -8,7 +8,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import Delivery, DigestItem, Environment, Project, Route, SeenRequest
+from .models import Delivery, DigestItem, Environment, Installation, Project, Route, SeenRequest
 
 
 def _utcnow() -> datetime:
@@ -74,13 +74,15 @@ class ProjectRepository(BaseRepository):
         slug: str,
         ref_id: Optional[int] = None,
         name: Optional[str] = None,
+        org: Optional[str] = None,
     ) -> None:
-        """Insert or update a project, preserving existing non-null ref_id/name."""
+        """Insert or update a project, preserving existing non-null ref_id/name/org."""
         async with self._sessionmaker() as session:
             stmt = sqlite_insert(Project).values(
                 slug=slug,
                 ref_id=ref_id,
                 name=name,
+                org=org,
                 last_seen=_utcnow(),
             )
             stmt = stmt.on_conflict_do_update(
@@ -88,6 +90,7 @@ class ProjectRepository(BaseRepository):
                 set_=dict(
                     ref_id=func.coalesce(stmt.excluded.ref_id, Project.ref_id),
                     name=func.coalesce(stmt.excluded.name, Project.name),
+                    org=func.coalesce(stmt.excluded.org, Project.org),
                     last_seen=stmt.excluded.last_seen,
                 ),
             )
@@ -105,10 +108,58 @@ class ProjectRepository(BaseRepository):
         async with self._sessionmaker() as session:
             rows = (
                 await session.execute(
-                    select(Project.slug, Project.ref_id, Project.name).order_by(Project.slug)
+                    select(Project.slug, Project.ref_id, Project.name, Project.org).order_by(Project.slug)
                 )
             ).all()
-            return [{"slug": r.slug, "ref_id": r.ref_id, "name": r.name} for r in rows]
+            return [{"slug": r.slug, "ref_id": r.ref_id, "name": r.name, "org": r.org} for r in rows]
+
+
+# ── Installation ───────────────────────────────────────────────────────────────
+
+
+class InstallationRepository(BaseRepository):
+    """Sentry integration installations → organisation slugs."""
+
+    async def upsert(
+        self,
+        uuid: str,
+        *,
+        org_slug: Optional[str] = None,
+        app_slug: Optional[str] = None,
+        status: Optional[str] = None,
+        secret_label: Optional[str] = None,
+    ) -> None:
+        now = _utcnow()
+        async with self._sessionmaker() as session:
+            stmt = sqlite_insert(Installation).values(
+                uuid=uuid, org_slug=org_slug, app_slug=app_slug, status=status,
+                secret_label=secret_label, first_seen=now, last_seen=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["uuid"],
+                set_=dict(
+                    org_slug=func.coalesce(stmt.excluded.org_slug, Installation.org_slug),
+                    app_slug=func.coalesce(stmt.excluded.app_slug, Installation.app_slug),
+                    status=func.coalesce(stmt.excluded.status, Installation.status),
+                    secret_label=func.coalesce(stmt.excluded.secret_label, Installation.secret_label),
+                    last_seen=stmt.excluded.last_seen,
+                ),
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def org_for(self, uuid: str) -> Optional[str]:
+        async with self._sessionmaker() as session:
+            return await session.scalar(select(Installation.org_slug).where(Installation.uuid == uuid))
+
+    async def list_all(self) -> list[dict]:
+        async with self._sessionmaker() as session:
+            rows = (await session.execute(select(Installation).order_by(Installation.first_seen))).scalars().all()
+            return [
+                {"uuid": r.uuid, "org_slug": r.org_slug, "app_slug": r.app_slug, "status": r.status,
+                 "secret_label": r.secret_label, "first_seen": r.first_seen, "last_seen": r.last_seen}
+                for r in rows
+            ]
 
 
 # ── Environment ────────────────────────────────────────────────────────────────
@@ -529,6 +580,7 @@ class Repositories:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         self.seen = SeenRequestRepository(sessionmaker)
         self.projects = ProjectRepository(sessionmaker)
+        self.installations = InstallationRepository(sessionmaker)
         self.environments = EnvironmentRepository(sessionmaker)
         self.routes = RouteRepository(sessionmaker)
         self.deliveries = DeliveryRepository(sessionmaker)
