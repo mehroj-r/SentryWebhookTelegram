@@ -31,6 +31,8 @@ class Route(Base):
     muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     # NULL = deliver instantly; N = collect and send one digest every N minutes.
     digest_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Forum topic to post into (set automatically when the route is created inside a topic).
+    thread_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
 
 class Project(Base):
@@ -81,6 +83,7 @@ class Delivery(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped
     error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    thread_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     # The HTML we sent, kept so later lifecycle events can edit the message.
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -103,6 +106,9 @@ class DigestItem(Base):
     level: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
     web_url: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Quiet-hours hold: do not flush before this time (overrides the route period).
+    not_before: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    thread_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
 
 class Installation(Base):
@@ -117,3 +123,17 @@ class Installation(Base):
     secret_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ChatSettings(Base):
+    """Per-chat preferences."""
+
+    __tablename__ = "chat_settings"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    timezone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    quiet_start: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # "HH:MM" local
+    quiet_end: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    format: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # html | plain
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

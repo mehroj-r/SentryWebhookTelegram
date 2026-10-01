@@ -11,6 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
+from ..chat_settings import format_local, parse_quiet_range, parse_timezone
 from ..db import Repositories
 from ..filters import LEVELS, normalize_level, parse_actions, parse_duration
 from .keyboards import (
@@ -31,6 +32,13 @@ log = logging.getLogger(__name__)
 # Project key: "slug", "org/slug" (multi-org) or a wildcard pattern ("backend-*", "*").
 _SLUG_RE = re.compile(r"^(?:[A-Za-z0-9_\-.*]{1,64}/)?[A-Za-z0-9_\-.*]{1,64}$")
 _ROUTES_PROMPT = "Routes for this chat — tap a button to remove it:"
+
+
+def _topic_of(message: Message) -> Optional[int]:
+    """Forum topic id when the message was sent inside a topic (General topic → None)."""
+    if getattr(message, "is_topic_message", False) and message.message_thread_id:
+        return message.message_thread_id
+    return None
 
 
 def _route_label(project: str, environment: Optional[str]) -> str:
@@ -75,6 +83,8 @@ async def cmd_start(message: Message) -> None:
         "• /filter &lt;slug|all&gt; level=&lt;min&gt; actions=&lt;a,b&gt; — noise control\n"
         "• /mute &lt;30m|2h|1d&gt; [slug] and /unmute [slug] — pause alerts\n"
         "• /digest &lt;slug|all&gt; &lt;minutes|off&gt; — batch events into periodic digests\n"
+        "• /settings, /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt; — chat preferences\n"
+        "• Run /subscribe or /add_route inside a forum topic to post there\n"
         "• /last — show the last events delivered to this chat\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
         "• /help — show this message",
@@ -106,9 +116,10 @@ async def cmd_last(message: Message, repos: Repositories) -> None:
     if not rows:
         await message.answer("Nothing has been delivered to this chat yet.")
         return
+    prefs = await repos.chat_settings.get(message.chat.id)
     lines = ["<b>Last deliveries to this chat:</b>"]
     for r in rows:
-        when = r["created_at"].strftime("%m-%d %H:%M") if r["created_at"] else "?"
+        when = format_local(r["created_at"], prefs) if r["created_at"] else "?"
         icon = _STATUS_ICON.get(r["status"], "•")
         where = escape(r["project"] or "?")
         if r["environment"]:
@@ -189,8 +200,9 @@ async def on_env_selected(
             return
 
     chat_id = callback.message.chat.id
+    thread_id = _topic_of(callback.message) if isinstance(callback.message, Message) else None
     inserted = await repos.routes.add(
-        project, environment, chat_id, created_by=callback.from_user.id
+        project, environment, chat_id, created_by=callback.from_user.id, thread_id=thread_id
     )
     label = _route_label(project, environment)
     text = (
@@ -221,7 +233,7 @@ async def cmd_add_route(message: Message, repos: Repositories) -> None:
 
     created_by = message.from_user.id if message.from_user else None
     inserted = await repos.routes.add(
-        project, environment, message.chat.id, created_by=created_by
+        project, environment, message.chat.id, created_by=created_by, thread_id=_topic_of(message)
     )
     label = _route_label(project, environment)
     if inserted:
@@ -349,6 +361,60 @@ async def cmd_unmute(message: Message, repos: Repositories) -> None:
         return
     n = await repos.routes.set_filters(message.chat.id, project, muted_until=None)
     await message.answer(f"🔔 Unmuted {n} route(s).")
+
+
+def _settings_text(prefs: Optional[dict]) -> str:
+    p = prefs or {}
+    quiet = f"{p['quiet_start']}–{p['quiet_end']}" if p.get("quiet_start") and p.get("quiet_end") else "off"
+    return (
+        "<b>Chat settings</b>\n"
+        f"🕒 Timezone: <code>{escape(p.get('timezone') or 'UTC')}</code>\n"
+        f"🌙 Quiet hours: <code>{escape(quiet)}</code> (fatal events still delivered)\n"
+        f"🗣 Language: <code>{escape(p.get('language') or 'en')}</code>\n"
+        f"📝 Format: <code>{escape(p.get('format') or 'html')}</code>\n\n"
+        "Change with /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;"
+    )
+
+
+@public_router.message(Command("settings"))
+async def cmd_settings(message: Message, repos: Repositories) -> None:
+    await message.answer(_settings_text(await repos.chat_settings.get(message.chat.id)))
+
+
+@admin_router.message(Command("tz"))
+async def cmd_tz(message: Message, repos: Repositories) -> None:
+    parts = (message.text or "").split()[1:]
+    if len(parts) != 1:
+        await message.answer("Usage: <code>/tz Asia/Tashkent</code>")
+        return
+    tz = parse_timezone(parts[0])
+    if tz is None:
+        await message.answer(f"Unknown timezone <code>{escape(parts[0])}</code>. Use an IANA name like Europe/Berlin.")
+        return
+    prefs = await repos.chat_settings.update(message.chat.id, timezone=tz)
+    await message.answer(f"🕒 Timezone set to <code>{escape(tz)}</code>.\n\n" + _settings_text(prefs))
+
+
+@admin_router.message(Command("quiet"))
+async def cmd_quiet(message: Message, repos: Repositories) -> None:
+    parts = (message.text or "").split()[1:]
+    usage = "Usage: <code>/quiet 22:00-08:00</code> or <code>/quiet off</code> (times in the chat's timezone)"
+    if len(parts) != 1:
+        await message.answer(usage)
+        return
+    if parts[0].lower() == "off":
+        prefs = await repos.chat_settings.update(message.chat.id, quiet_start=None, quiet_end=None)
+        await message.answer("🔔 Quiet hours disabled.\n\n" + _settings_text(prefs))
+        return
+    rng = parse_quiet_range(parts[0])
+    if rng is None:
+        await message.answer(usage)
+        return
+    prefs = await repos.chat_settings.update(message.chat.id, quiet_start=rng[0], quiet_end=rng[1])
+    await message.answer(
+        f"🌙 Quiet hours set: <code>{rng[0]}–{rng[1]}</code>. Non-fatal events are held and sent as a digest when they end.\n\n"
+        + _settings_text(prefs)
+    )
 
 
 @admin_router.callback_query(DelRouteCallback.filter())

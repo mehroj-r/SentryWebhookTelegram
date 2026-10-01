@@ -9,7 +9,16 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import Delivery, DigestItem, Environment, Installation, Project, Route, SeenRequest
+from .models import (
+    ChatSettings,
+    Delivery,
+    DigestItem,
+    Environment,
+    Installation,
+    Project,
+    Route,
+    SeenRequest,
+)
 
 
 def _utcnow() -> datetime:
@@ -203,24 +212,28 @@ class RouteRepository(BaseRepository):
         environment: Optional[str],
         chat_id: int,
         created_by: Optional[int] = None,
+        thread_id: Optional[int] = None,
     ) -> bool:
         """
-        Insert a route. Returns True if newly added, False if already exists.
+        Insert a route. Returns True if newly added, False if already exists
+        (in which case an existing route's thread_id is updated if given).
 
         When environment is NULL, SQLite's UNIQUE constraint doesn't catch
         duplicates (NULL != NULL in UNIQUE), so we pre-check explicitly.
         """
         async with self._sessionmaker() as session:
-            if environment is None:
-                existing = await session.scalar(
-                    select(Route.id).where(
-                        Route.project == project,
-                        Route.environment.is_(None),
-                        Route.chat_id == chat_id,
-                    )
+            existing = await session.scalar(
+                select(Route).where(
+                    Route.project == project,
+                    Route.environment.is_(None) if environment is None else Route.environment == environment,
+                    Route.chat_id == chat_id,
                 )
-                if existing is not None:
-                    return False
+            )
+            if existing is not None:
+                if thread_id is not None and existing.thread_id != thread_id:
+                    existing.thread_id = thread_id
+                    await session.commit()
+                return False
 
             try:
                 session.add(
@@ -230,6 +243,7 @@ class RouteRepository(BaseRepository):
                         chat_id=chat_id,
                         created_by=created_by,
                         created_at=_utcnow(),
+                        thread_id=thread_id,
                     )
                 )
                 await session.commit()
@@ -353,6 +367,7 @@ def _route_dict(r: Route) -> dict:
         "actions": r.actions,
         "muted_until": r.muted_until,
         "digest_minutes": r.digest_minutes,
+        "thread_id": r.thread_id,
     }
 
 
@@ -376,6 +391,7 @@ class DeliveryRepository(BaseRepository):
         error: Optional[str] = None,
         tg_message_id: Optional[int] = None,
         text: Optional[str] = None,
+        thread_id: Optional[int] = None,
     ) -> int:
         async with self._sessionmaker() as session:
             row = Delivery(
@@ -391,6 +407,7 @@ class DeliveryRepository(BaseRepository):
                 error=(error or None) and str(error)[:1000],
                 tg_message_id=tg_message_id,
                 text=text,
+                thread_id=thread_id,
             )
             session.add(row)
             await session.commit()
@@ -478,6 +495,7 @@ def _delivery_dict(r: Delivery) -> dict:
         "error": r.error,
         "tg_message_id": r.tg_message_id,
         "text": r.text,
+        "thread_id": r.thread_id,
     }
 
 
@@ -500,6 +518,8 @@ class DigestRepository(BaseRepository):
         level: Optional[str],
         title: str,
         web_url: Optional[str],
+        not_before: Optional[datetime] = None,
+        thread_id: Optional[int] = None,
     ) -> None:
         async with self._sessionmaker() as session:
             session.add(
@@ -515,6 +535,8 @@ class DigestRepository(BaseRepository):
                     level=level,
                     title=title[:300],
                     web_url=web_url,
+                    not_before=not_before,
+                    thread_id=thread_id,
                 )
             )
             await session.commit()
@@ -528,29 +550,47 @@ class DigestRepository(BaseRepository):
         async with self._sessionmaker() as session:
             rows = (
                 await session.execute(
-                    select(DigestItem.chat_id, DigestItem.created_at, Route.digest_minutes)
+                    select(DigestItem.chat_id, DigestItem.created_at, DigestItem.not_before, Route.digest_minutes)
                     .join(Route, Route.id == DigestItem.route_id, isouter=True)
                 )
             ).all()
         due: list[int] = []
-        for chat_id, created_at, minutes in rows:
+        for chat_id, created_at, not_before, minutes in rows:
+            if chat_id in due:
+                continue
+            if not_before is not None:
+                if not_before.tzinfo is None:
+                    not_before = not_before.replace(tzinfo=timezone.utc)
+                if not_before <= now:
+                    due.append(chat_id)
+                continue
             if created_at.tzinfo is None:
                 created_at = created_at.replace(tzinfo=timezone.utc)
-            period = timedelta(minutes=minutes or 0)
-            if created_at + period <= now and chat_id not in due:
+            if created_at + timedelta(minutes=minutes or 0) <= now:
                 due.append(chat_id)
         return due
 
-    async def pop_for_chat(self, chat_id: int) -> list[dict]:
-        """Return and delete every parked item for a chat."""
+    async def pop_for_chat(self, chat_id: int, now: Optional[datetime] = None) -> list[dict]:
+        """Return and delete every parked item for a chat that may be sent now."""
+        now = now or _utcnow()
         async with self._sessionmaker() as session:
             rows = (
                 await session.execute(
                     select(DigestItem).where(DigestItem.chat_id == chat_id).order_by(DigestItem.created_at)
                 )
             ).scalars().all()
+            ready = []
+            for r in rows:
+                nb = r.not_before
+                if nb is not None and nb.tzinfo is None:
+                    nb = nb.replace(tzinfo=timezone.utc)
+                if nb is None or nb <= now:
+                    ready.append(r)
+            rows = ready
             items = [
                 {
+                    "id": r.id,
+                    "thread_id": r.thread_id,
                     "created_at": r.created_at,
                     "project": r.project,
                     "environment": r.environment,
@@ -564,7 +604,7 @@ class DigestRepository(BaseRepository):
                 for r in rows
             ]
             if rows:
-                await session.execute(delete(DigestItem).where(DigestItem.chat_id == chat_id))
+                await session.execute(delete(DigestItem).where(DigestItem.id.in_([r.id for r in rows])))
                 await session.commit()
             return items
 
@@ -575,6 +615,45 @@ class DigestRepository(BaseRepository):
                     select(func.count()).select_from(DigestItem).where(DigestItem.chat_id == chat_id)
                 )
             ) or 0
+
+
+# ── Chat settings ──────────────────────────────────────────────────────────────
+
+
+class ChatSettingsRepository(BaseRepository):
+    async def get(self, chat_id: int) -> Optional[dict]:
+        async with self._sessionmaker() as session:
+            row = await session.get(ChatSettings, chat_id)
+            return _chat_settings_dict(row) if row else None
+
+    async def update(self, chat_id: int, **fields) -> dict:
+        """Upsert the given fields (None clears a field)."""
+        allowed = {"timezone", "quiet_start", "quiet_end", "language", "format"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unknown chat settings: {unknown}")
+        async with self._sessionmaker() as session:
+            row = await session.get(ChatSettings, chat_id)
+            if row is None:
+                row = ChatSettings(chat_id=chat_id, updated_at=_utcnow())
+                session.add(row)
+            for key, value in fields.items():
+                setattr(row, key, value)
+            row.updated_at = _utcnow()
+            await session.commit()
+            return _chat_settings_dict(row)
+
+
+def _chat_settings_dict(r: ChatSettings) -> dict:
+    return {
+        "chat_id": r.chat_id,
+        "timezone": r.timezone,
+        "quiet_start": r.quiet_start,
+        "quiet_end": r.quiet_end,
+        "language": r.language,
+        "format": r.format,
+        "updated_at": r.updated_at,
+    }
 
 
 # ── Container ──────────────────────────────────────────────────────────────────
@@ -591,3 +670,4 @@ class Repositories:
         self.routes = RouteRepository(sessionmaker)
         self.deliveries = DeliveryRepository(sessionmaker)
         self.digests = DigestRepository(sessionmaker)
+        self.chat_settings = ChatSettingsRepository(sessionmaker)

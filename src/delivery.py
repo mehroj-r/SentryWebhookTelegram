@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot
-from aiogram.types import ReplyParameters
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramForbiddenError,
@@ -13,9 +14,11 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
+from aiogram.types import ReplyParameters
 
-from .config import settings
 from .burst import BurstCollapser, Summary
+from .chat_settings import quiet_until
+from .config import settings
 from .db import Repositories
 from .filters import event_level, skip_reason
 from .sentry.formatters import (
@@ -32,34 +35,60 @@ log = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 5
 _BACKOFF_BASE_S = 1.0
 _BACKOFF_MAX_S = 30.0
+_FLUSH_TICK_S = 15.0
+
+# Levels that are delivered even during a chat's quiet hours.
+QUIET_HOURS_BYPASS_LEVELS = frozenset({"fatal"})
+
+TargetKey = tuple[int, Optional[int]]  # (chat_id, thread_id)
 
 
 class Target:
-    """Resolution result for one chat: deliver now, park for a digest, or skip."""
+    """Resolution result for one (chat, topic): deliver now, park, or skip."""
 
-    __slots__ = ("skip", "digest_route_id")
+    __slots__ = ("chat_id", "thread_id", "skip", "digest_route_id", "route_id")
 
-    def __init__(self, skip: Optional[str] = None, digest_route_id: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        chat_id: int,
+        thread_id: Optional[int] = None,
+        skip: Optional[str] = None,
+        digest_route_id: Optional[int] = None,
+        route_id: Optional[int] = None,
+    ) -> None:
+        self.chat_id = chat_id
+        self.thread_id = thread_id
         self.skip = skip
         self.digest_route_id = digest_route_id
+        self.route_id = route_id
+
+    @property
+    def key(self) -> TargetKey:
+        return (self.chat_id, self.thread_id)
+
+    @property
+    def rank(self) -> int:
+        """Instant > digest > skipped."""
+        if self.skip:
+            return 0
+        return 1 if self.digest_route_id else 2
 
 
-async def _resolve_targets(repos: Repositories, event: ParsedEvent) -> dict[int, Target]:
+async def _resolve_targets(repos: Repositories, event: ParsedEvent) -> dict[TargetKey, Target]:
     """
-    Map each target chat id to a Target.
+    Resolve routing for an event.
 
-    A chat may match through several routes; it is skipped only if *every*
-    matching route filters the event out, and delivered instantly if any
-    passing route is instant (instant beats digest).
-
-    Resolution order:
-    1. Routes for the project slug (exact env, then "any env" wildcard)
-    2. If only a numeric project id is known: routes keyed by the slug we
-       learned earlier for that id, else routes keyed by the id itself
-       (so `/add_route 123456` works before any issue webhook taught us the slug)
+    Project candidates, most specific first:
+    1. "org/slug" (multi-org), then the plain slug
+    2. If only a numeric project id is known: the slug learned earlier for
+       that id, else the id itself (so `/add_route 123456` works before any
+       issue webhook taught us the slug)
     3. DEFAULT_CHAT_ID fallback
+
+    A (chat, topic) may match through several routes; it is skipped only if
+    *every* matching route filters the event out, and delivered instantly if
+    any passing route is instant (instant beats digest).
     """
-    candidates: list[str] = []
     slugs: list[str] = []
     if event.project_slug:
         slugs.append(event.project_slug)
@@ -68,47 +97,44 @@ async def _resolve_targets(repos: Repositories, event: ParsedEvent) -> dict[int,
         if learned and learned not in slugs:
             slugs.append(learned)
         slugs.append(str(event.project_ref_id))
+    candidates: list[str] = []
     for slug in slugs:
-        # "org/slug" routes are most specific; plain slug routes still match.
         if event.org:
             candidates.append(f"{event.org}/{slug}")
         candidates.append(slug)
 
     for project in candidates:
         routes = await repos.routes.resolve_routes(project, event.environment)
-        if routes:
-            targets: dict[int, Target] = {}
-            for route in routes:
-                chat_id = route["chat_id"]
-                reason = skip_reason(event, route)
-                candidate = Target(
-                    skip=reason,
-                    digest_route_id=route["id"] if (reason is None and route.get("digest_minutes")) else None,
-                )
-                current = targets.get(chat_id)
-                if current is None or _better(candidate, current):
-                    targets[chat_id] = candidate
-            return targets
+        if not routes:
+            continue
+        targets: dict[TargetKey, Target] = {}
+        for route in routes:
+            reason = skip_reason(event, route)
+            candidate = Target(
+                chat_id=route["chat_id"],
+                thread_id=route.get("thread_id"),
+                skip=reason,
+                digest_route_id=route["id"] if (reason is None and route.get("digest_minutes")) else None,
+                route_id=route["id"],
+            )
+            current = targets.get(candidate.key)
+            if current is None or candidate.rank > current.rank:
+                targets[candidate.key] = candidate
+        return targets
 
     if settings.default_chat_id:
-        return {settings.default_chat_id: Target()}
-
+        t = Target(chat_id=settings.default_chat_id)
+        return {t.key: t}
     return {}
-
-
-def _better(a: Target, b: Target) -> bool:
-    """Instant > digest > skipped."""
-    rank = lambda t: 0 if t.skip else (1 if t.digest_route_id else 2)  # noqa: E731
-    return rank(a) > rank(b)
 
 
 async def _resolve_chats(repos: Repositories, event: ParsedEvent) -> list[int]:
     """Chat ids that would receive the event instantly (filters applied)."""
-    return [
-        chat
-        for chat, t in (await _resolve_targets(repos, event)).items()
-        if t.skip is None and t.digest_route_id is None
-    ]
+    out: list[int] = []
+    for t in (await _resolve_targets(repos, event)).values():
+        if t.skip is None and t.digest_route_id is None and t.chat_id not in out:
+            out.append(t.chat_id)
+    return out
 
 
 class SendResult:
@@ -124,21 +150,26 @@ class SendResult:
 
 
 async def _send_to_chat(
-    bot: Bot, chat_id: int, text: str, reply_to: Optional[int] = None
+    bot: Bot,
+    chat_id: int,
+    text: str,
+    reply_to: Optional[int] = None,
+    thread_id: Optional[int] = None,
 ) -> SendResult:
     """
     Send a message, honouring Telegram rate limits and retrying transient
     failures with exponential backoff. `reply_to` threads the message under an
-    earlier post (the original is allowed to be gone).
+    earlier post (the original is allowed to be gone); `thread_id` targets a
+    forum topic.
     """
     reply = (
-        ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
-        if reply_to
-        else None
+        ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
     )
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            sent = await bot.send_message(chat_id, text, reply_parameters=reply)
+            sent = await bot.send_message(
+                chat_id, text, reply_parameters=reply, message_thread_id=thread_id
+            )
             return SendResult(message_id=sent.message_id)
         except TelegramRetryAfter as exc:
             wait = min(float(exc.retry_after), 120.0)
@@ -171,14 +202,14 @@ async def _send_to_chat(
 async def _record(
     repos: Repositories,
     event: ParsedEvent,
-    chat_id: int,
+    target: Target,
     result: SendResult,
     text: str,
     status: Optional[str] = None,
 ) -> None:
     try:
         await repos.deliveries.record(
-            chat_id=chat_id,
+            chat_id=target.chat_id,
             resource=event.resource,
             action=event.action,
             project=event.project_slug or (str(event.project_ref_id) if event.project_ref_id else None),
@@ -189,9 +220,10 @@ async def _record(
             error=result.error,
             tg_message_id=result.message_id,
             text=text if result.ok else None,
+            thread_id=target.thread_id,
         )
     except Exception:
-        log.exception("Could not record delivery for chat_id=%s", chat_id)
+        log.exception("Could not record delivery for chat_id=%s", target.chat_id)
 
 
 async def _stamp_original(
@@ -211,62 +243,23 @@ async def _stamp_original(
     try:
         await bot.edit_message_text(new_text, chat_id=chat_id, message_id=prior["tg_message_id"])
         await repos.deliveries.update_text(prior["id"], new_text)
-    except TelegramRetryAfter as exc:
+    except TelegramRetryAfter:
         log.debug("Rate limited while stamping message %s; skipping", prior["tg_message_id"])
     except Exception as exc:  # noqa: BLE001 — purely cosmetic, never fail delivery
         log.debug("Could not stamp original message %s: %s", prior["tg_message_id"], exc)
 
 
-async def send_event(
-    bot: Bot,
+async def _park_for_digest(
     repos: Repositories,
     event: ParsedEvent,
-    collapser: Optional[BurstCollapser] = None,
+    target: Target,
+    route_id: int,
+    not_before: Optional[datetime] = None,
+    reason: str = "queued for digest",
 ) -> None:
-    """Resolve routing and deliver the formatted event to all matched chats."""
-    targets = await _resolve_targets(repos, event)
-    if not targets:
-        log.warning(
-            "No target chats for resource=%s action=%s project=%s env=%s",
-            event.resource,
-            event.action,
-            event.project_slug or event.project_ref_id,
-            event.environment,
-        )
-        return
-
-    text = format_event(event)
-    for chat_id, target in targets.items():
-        if target.skip is not None:
-            log.info("Skipping chat_id=%s for %s.%s: %s", chat_id, event.resource, event.action, target.skip)
-            await _record(repos, event, chat_id, SendResult(error=target.skip), text, status="skipped")
-            continue
-        if target.digest_route_id is not None:
-            await _park_for_digest(repos, event, chat_id, target.digest_route_id)
-            continue
-        if collapser is not None and not collapser.check(event, chat_id):
-            await _record(
-                repos, event, chat_id, SendResult(error="collapsed into burst summary"), text, status="skipped"
-            )
-            continue
-        prior: Optional[dict] = None
-        if event.issue_id:
-            try:
-                prior = await repos.deliveries.last_for_issue(chat_id, event.issue_id)
-            except Exception:
-                log.exception("Thread lookup failed for chat_id=%s", chat_id)
-        result = await _send_to_chat(
-            bot, chat_id, text, reply_to=prior["tg_message_id"] if prior else None
-        )
-        await _record(repos, event, chat_id, result, text)
-        if prior and result.ok:
-            await _stamp_original(bot, repos, event, chat_id, prior)
-
-
-async def _park_for_digest(repos: Repositories, event: ParsedEvent, chat_id: int, route_id: int) -> None:
     try:
         await repos.digests.add(
-            chat_id=chat_id,
+            chat_id=target.chat_id,
             route_id=route_id,
             project=event.project_slug or (str(event.project_ref_id) if event.project_ref_id else None),
             environment=event.environment,
@@ -276,29 +269,105 @@ async def _park_for_digest(repos: Repositories, event: ParsedEvent, chat_id: int
             level=event_level(event),
             title=event.title,
             web_url=event.web_url,
+            not_before=not_before,
+            thread_id=target.thread_id,
         )
-        await _record(repos, event, chat_id, SendResult(error="queued for digest"), "", status="digest")
+        await _record(repos, event, target, SendResult(error=reason), "", status="digest")
     except Exception:
-        log.exception("Could not park event for digest chat_id=%s", chat_id)
+        log.exception("Could not park event for digest chat_id=%s", target.chat_id)
+
+
+async def _quiet_hold_until(repos: Repositories, event: ParsedEvent, chat_id: int) -> Optional[datetime]:
+    """When the chat is in quiet hours and the event isn't fatal, return the hold deadline."""
+    level = event_level(event)
+    if level in QUIET_HOURS_BYPASS_LEVELS:
+        return None
+    try:
+        row = await repos.chat_settings.get(chat_id)
+    except Exception:
+        log.exception("Chat settings lookup failed for chat_id=%s", chat_id)
+        return None
+    return quiet_until(row)
+
+
+async def send_event(
+    bot: Bot,
+    repos: Repositories,
+    event: ParsedEvent,
+    collapser: Optional[BurstCollapser] = None,
+) -> None:
+    """Resolve routing and deliver the formatted event to all matched targets."""
+    targets = await _resolve_targets(repos, event)
+    if not targets:
+        log.warning(
+            "No target chats for resource=%s action=%s project=%s env=%s",
+            event.resource, event.action, event.project_slug or event.project_ref_id, event.environment,
+        )
+        return
+
+    text = format_event(event)
+    for target in targets.values():
+        chat_id = target.chat_id
+        if target.skip is not None:
+            log.info("Skipping chat_id=%s for %s.%s: %s", chat_id, event.resource, event.action, target.skip)
+            await _record(repos, event, target, SendResult(error=target.skip), text, status="skipped")
+            continue
+
+        hold_until = await _quiet_hold_until(repos, event, chat_id)
+        if hold_until is not None and target.route_id is not None:
+            await _park_for_digest(
+                repos, event, target, target.route_id, not_before=hold_until,
+                reason=f"quiet hours until {hold_until:%Y-%m-%d %H:%M} UTC",
+            )
+            continue
+
+        if target.digest_route_id is not None:
+            await _park_for_digest(repos, event, target, target.digest_route_id)
+            continue
+
+        if collapser is not None and not collapser.check(event, chat_id):
+            await _record(
+                repos, event, target, SendResult(error="collapsed into burst summary"), text, status="skipped"
+            )
+            continue
+
+        prior: Optional[dict] = None
+        if event.issue_id:
+            try:
+                prior = await repos.deliveries.last_for_issue(chat_id, event.issue_id)
+            except Exception:
+                log.exception("Thread lookup failed for chat_id=%s", chat_id)
+        result = await _send_to_chat(
+            bot, chat_id, text,
+            reply_to=prior["tg_message_id"] if prior else None,
+            thread_id=target.thread_id,
+        )
+        await _record(repos, event, target, result, text)
+        if prior and result.ok:
+            await _stamp_original(bot, repos, event, chat_id, prior)
 
 
 async def flush_digests(bot: Bot, repos: Repositories, force: bool = False) -> int:
-    """Send digests for chats whose period has elapsed. Returns chats flushed."""
-    from datetime import datetime, timedelta, timezone
-
+    """Send digests for chats whose period (or quiet-hours hold) has elapsed. Returns chats flushed."""
     now = datetime.now(timezone.utc) + (timedelta(days=3650) if force else timedelta())
     sent = 0
     for chat_id in await repos.digests.due_chats(now):
-        items = await repos.digests.pop_for_chat(chat_id)
+        items = await repos.digests.pop_for_chat(chat_id, now)
         if not items:
             continue
-        text = format_digest(items)
-        result = await _send_to_chat(bot, chat_id, text)
-        sample = ParsedEvent(
-            resource="digest", action="sent", project_slug=None, project_ref_id=None,
-            environment=None, title=f"{len(items)} events", web_url=None,
-        )
-        await _record(repos, sample, chat_id, result, text)
+        # One digest per forum topic within the chat.
+        by_thread: dict[Optional[int], list[dict]] = {}
+        for it in items:
+            by_thread.setdefault(it.get("thread_id"), []).append(it)
+        for thread_id, group in by_thread.items():
+            text = format_digest(group)
+            target = Target(chat_id=chat_id, thread_id=thread_id)
+            result = await _send_to_chat(bot, chat_id, text, thread_id=thread_id)
+            sample = ParsedEvent(
+                resource="digest", action="sent", project_slug=None, project_ref_id=None,
+                environment=None, title=f"{len(group)} events", web_url=None,
+            )
+            await _record(repos, sample, target, result, text)
         sent += 1
     return sent
 
@@ -311,13 +380,12 @@ async def send_burst_summary(bot: Bot, repos: Repositories, summary: Summary) ->
         prior = await repos.deliveries.last_for_issue(summary.chat_id, summary.issue_id)
     except Exception:
         log.exception("Thread lookup failed for burst summary")
+    thread_id = prior.get("thread_id") if prior else None
     result = await _send_to_chat(
-        bot, summary.chat_id, text, reply_to=prior["tg_message_id"] if prior else None
+        bot, summary.chat_id, text,
+        reply_to=prior["tg_message_id"] if prior else None, thread_id=thread_id,
     )
-    await _record(repos, summary.sample, summary.chat_id, result, text)
-
-
-_FLUSH_TICK_S = 15.0
+    await _record(repos, summary.sample, Target(summary.chat_id, thread_id), result, text)
 
 
 async def delivery_worker(
@@ -329,7 +397,7 @@ async def delivery_worker(
     """
     Background asyncio task that consumes ParsedEvent items and delivers them.
     Putting None into the queue triggers a clean shutdown. Between items it
-    periodically flushes burst summaries whose window has elapsed.
+    periodically flushes burst summaries and due digests.
     """
     if collapser is None:
         collapser = BurstCollapser(settings.burst_window_seconds)
@@ -359,25 +427,21 @@ async def delivery_worker(
     log.info("Delivery worker stopped")
 
 
-async def _safe_flush_digests(bot: Bot, repos: Repositories) -> None:
-    try:
-        await flush_digests(bot, repos)
-    except Exception:
-        log.exception("Digest flush failed")
-
-
 async def _flush_bursts(
     bot: Bot, repos: Repositories, collapser: BurstCollapser, force: bool = False
 ) -> None:
     if not collapser.enabled:
         return
-    now = None
-    if force:
-        import time
-
-        now = time.monotonic() + collapser.window_s  # pretend every window elapsed
+    now = time.monotonic() + collapser.window_s if force else None
     for summary in collapser.flush_due(now):
         try:
             await send_burst_summary(bot, repos, summary)
         except Exception:
             log.exception("Failed to send burst summary for chat_id=%s", summary.chat_id)
+
+
+async def _safe_flush_digests(bot: Bot, repos: Repositories) -> None:
+    try:
+        await flush_digests(bot, repos)
+    except Exception:
+        log.exception("Digest flush failed")

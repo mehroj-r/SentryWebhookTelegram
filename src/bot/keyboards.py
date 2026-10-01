@@ -81,8 +81,9 @@ def routes_keyboard(routes: list[dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for r in routes:
         env_label = r["environment"] or "any env"
+        topic = " 🧵" if r.get("thread_id") else ""
         builder.button(
-            text=_button_label(f"✖️ {r['project']} / {env_label}{describe_filters(r)}"),
+            text=_button_label(f"✖️ {r['project']} / {env_label}{topic}{describe_filters(r)}"),
             callback_data=DelRouteCallback(route_id=r["id"]),
         )
     builder.adjust(1)
