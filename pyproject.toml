@@ -6,6 +6,7 @@ dependencies = [
     "aiogram>=3.13",
     "aiohttp>=3.9",
     "aiosqlite",
+    "alembic>=1.13",
     "pydantic>=2",
     "pydantic-settings>=2.3",
     "sqlalchemy[asyncio]>=2.0",
