@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -301,6 +302,10 @@ class RouteRepository(BaseRepository):
         """
         Return matching routes (with their filter columns) for (project, environment).
 
+        Project matching: exact routes first; if none, wildcard routes whose
+        pattern (fnmatch: `backend-*`, `*-prod`, `*`) matches the project.
+
+        Environment matching within the chosen set:
         - environment given: exact (project, environment) matches win; if there
           are none, fall back to the (project, NULL) "any environment" routes.
         - environment unknown (e.g. `issue` webhooks never carry one): deliver
@@ -309,22 +314,23 @@ class RouteRepository(BaseRepository):
           chats that subscribed to a specific environment.
         """
         async with self._sessionmaker() as session:
-            if environment:
-                rows = (
-                    await session.execute(
-                        select(Route).where(
-                            Route.project == project, Route.environment == environment
-                        )
-                    )
+            exact = (await session.execute(select(Route).where(Route.project == project))).scalars().all()
+            candidates = [_route_dict(r) for r in exact]
+            if not candidates:
+                patterns = (
+                    await session.execute(select(Route).where(Route.project.like("%*%")))
                 ).scalars().all()
-                if rows:
-                    return [_route_dict(r) for r in rows]
-                where = (Route.project == project, Route.environment.is_(None))
-            else:
-                where = (Route.project == project,)
-
-            rows = (await session.execute(select(Route).where(*where))).scalars().all()
-            return [_route_dict(r) for r in rows]
+                candidates = [
+                    _route_dict(r) for r in patterns if fnmatch.fnmatchcase(project, r.project)
+                ]
+        if not candidates:
+            return []
+        if environment:
+            exact_env = [r for r in candidates if r["environment"] == environment]
+            if exact_env:
+                return exact_env
+            return [r for r in candidates if r["environment"] is None]
+        return candidates
 
     async def resolve_chats(self, project: str, environment: Optional[str]) -> list[int]:
         """Distinct chat ids of `resolve_routes` (filters ignored)."""

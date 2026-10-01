@@ -28,8 +28,8 @@ from .middlewares import AdminMiddleware
 log = logging.getLogger(__name__)
 
 # Sentry slugs: lowercase letters, digits, '-' and '_' (we're lenient on case).
-# Project key: "slug" or "org/slug" (multi-org deployments).
-_SLUG_RE = re.compile(r"^(?:[A-Za-z0-9_\-.]{1,64}/)?[A-Za-z0-9_\-.]{1,64}$")
+# Project key: "slug", "org/slug" (multi-org) or a wildcard pattern ("backend-*", "*").
+_SLUG_RE = re.compile(r"^(?:[A-Za-z0-9_\-.*]{1,64}/)?[A-Za-z0-9_\-.*]{1,64}$")
 _ROUTES_PROMPT = "Routes for this chat — tap a button to remove it:"
 
 
@@ -71,7 +71,7 @@ async def cmd_start(message: Message) -> None:
         "<b>Commands:</b>\n"
         "• /subscribe — route Sentry events to this chat\n"
         "• /routes — view and remove routing rules for this chat\n"
-        "• /add_route &lt;slug&gt; [env] — add a route by project slug\n"
+        "• /add_route &lt;slug|pattern&gt; [env] — add a route (wildcards: backend-*, *)\n"
         "• /filter &lt;slug|all&gt; level=&lt;min&gt; actions=&lt;a,b&gt; — noise control\n"
         "• /mute &lt;30m|2h|1d&gt; [slug] and /unmute [slug] — pause alerts\n"
         "• /digest &lt;slug|all&gt; &lt;minutes|off&gt; — batch events into periodic digests\n"
