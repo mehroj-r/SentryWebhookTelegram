@@ -1,0 +1,15 @@
+# secrets & runtime data
+.env
+*.db
+*.db-wal
+*.db-shm
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.idea/

@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+from aiohttp import web
+from aiogram import Bot, Dispatcher
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+from .config import settings
+from .db import Repositories
+from .sentry.parser import ParsedEvent, parse as parse_sentry_event
+from .sentry.signature import verify_signature
+
+log = logging.getLogger(__name__)
+
+# Typed app keys (aiohttp ≥3.9 warns on plain string keys).
+REPOS_KEY: web.AppKey[Repositories] = web.AppKey("repos", Repositories)
+QUEUE_KEY: web.AppKey["asyncio.Queue[ParsedEvent | None]"] = web.AppKey("queue", asyncio.Queue)
+BG_TASKS_KEY: web.AppKey[set["asyncio.Task[Any]"]] = web.AppKey("bg_tasks", set)
+
+
+def _spawn(app: web.Application, coro) -> None:  # type: ignore[no-untyped-def]
+    """
+    Fire-and-forget with a strong reference. asyncio only keeps weak refs to
+    tasks, so an un-referenced task can be garbage-collected mid-flight.
+    """
+    task = asyncio.create_task(coro)
+    tasks = app[BG_TASKS_KEY]
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
+async def _sentry_webhook(request: web.Request) -> web.Response:
+    """
+    Receive a Sentry webhook, verify its signature, and enqueue the parsed
+    event for async delivery. Returns 200 immediately (fast-ack pattern).
+    """
+    app = request.app
+    repos = app[REPOS_KEY]
+    queue = app[QUEUE_KEY]
+
+    # 1. Read raw bytes FIRST — required for correct HMAC verification
+    raw_body = await request.read()
+
+    # 2. Verify HMAC-SHA256 signature
+    sig = request.headers.get("Sentry-Hook-Signature", "")
+    if not verify_signature(raw_body, sig, settings.sentry_client_secret):
+        log.warning("Rejected Sentry request with invalid signature from %s", request.remote)
+        return web.Response(status=401, text="Invalid signature")
+
+    # 3. Decode JSON
+    resource = request.headers.get("Sentry-Hook-Resource", "")
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        log.warning("Invalid JSON from Sentry (resource=%s)", resource)
+        return web.Response(status=400, text="Invalid JSON")
+    if not isinstance(payload, dict):
+        log.warning("Unexpected JSON payload type %s (resource=%s)", type(payload).__name__, resource)
+        return web.Response(status=400, text="Invalid JSON")
+
+    # 4. Back-pressure before we mark the hook as seen: a full queue means
+    #    Telegram is unreachable; tell Sentry to retry later instead of
+    #    swallowing the event.
+    if queue.full():
+        log.error("Delivery queue full (%d); asking Sentry to retry", queue.qsize())
+        return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
+
+    # 5. Dedup by Request-ID (atomic insert; concurrent duplicates lose the race)
+    request_id = request.headers.get("Request-ID", "")
+    if request_id:
+        try:
+            is_new = await repos.seen.add_if_new(request_id)
+        except Exception:
+            log.exception("Dedup store failed; delivering anyway")
+            is_new = True
+        if not is_new:
+            log.debug("Duplicate Request-ID=%s, skipping", request_id)
+            return web.Response(status=200, text="ok")
+
+    # 6. Parse — never let parse errors block the 200 response
+    try:
+        event: ParsedEvent = parse_sentry_event(payload, resource)
+    except Exception:
+        log.exception("Failed to parse Sentry event resource=%s", resource)
+        return web.Response(status=200, text="ok")
+
+    # 7. Enqueue — this is the fast-ack point
+    try:
+        queue.put_nowait(event)
+    except asyncio.QueueFull:
+        log.error("Delivery queue full; asking Sentry to retry")
+        return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
+
+    # 8. Best-effort metadata learning in the background
+    _spawn(app, _learn_project(repos, event, payload))
+
+    return web.Response(status=200, text="ok")
+
+
+async def _learn_project(
+    repos: Repositories, event: ParsedEvent, payload: dict[str, Any]
+) -> None:
+    """
+    Best-effort: persist project + environment metadata so the routing UI
+    can list them without the user needing to type slugs manually.
+    """
+    try:
+        slug = event.project_slug
+        if not slug:
+            return
+        data = payload.get("data")
+        data = data if isinstance(data, dict) else {}
+        name: str | None = None
+        for key in ("issue", "error", "event"):
+            obj = data.get(key)
+            if isinstance(obj, dict):
+                proj = obj.get("project")
+                if isinstance(proj, dict):
+                    name = proj.get("name") or proj.get("slug")
+                    break
+        await repos.projects.upsert(slug, event.project_ref_id, name)
+        if event.environment:
+            await repos.environments.register(slug, event.environment)
+    except Exception:
+        log.debug("Could not persist project metadata", exc_info=True)
+
+
+async def _health(request: web.Request) -> web.Response:
+    queue = request.app[QUEUE_KEY]
+    return web.json_response({"status": "ok", "queue_size": queue.qsize()})
+
+
+async def _wait_background_tasks(app: web.Application) -> None:
+    tasks = list(app[BG_TASKS_KEY])
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def build_app(
+    bot: Bot, dp: Dispatcher, repos: Repositories, queue: "asyncio.Queue[ParsedEvent | None]"
+) -> web.Application:
+    """Build the aiohttp Application with Sentry + Telegram webhook routes."""
+    app = web.Application(client_max_size=settings.max_body_bytes)
+    app[REPOS_KEY] = repos
+    app[QUEUE_KEY] = queue
+    app[BG_TASKS_KEY] = set()
+
+    app.router.add_get("/health", _health)
+
+    # Sentry receiver
+    app.router.add_post(settings.sentry_webhook_path, _sentry_webhook)
+
+    # Telegram webhook (aiogram)
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=settings.webhook_secret_token,
+    ).register(app, path=settings.tg_webhook_path)
+
+    setup_application(app, dp, bot=bot)
+    app.on_shutdown.append(_wait_background_tasks)
+
+    return app

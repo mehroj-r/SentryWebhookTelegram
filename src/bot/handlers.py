@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import logging
+import re
+from html import escape
+from typing import Optional
+
+from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, Message
+
+from ..db import Repositories
+from .keyboards import (
+    ANY_ENV,
+    DelRouteCallback,
+    EnvCallback,
+    ProjectCallback,
+    environments_keyboard,
+    projects_keyboard,
+    resolve_key,
+    routes_keyboard,
+)
+from .middlewares import AdminMiddleware
+
+log = logging.getLogger(__name__)
+
+# Sentry slugs: lowercase letters, digits, '-' and '_' (we're lenient on case).
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_\-.]{1,64}$")
+_ROUTES_PROMPT = "Routes for this chat — tap a button to remove it:"
+
+
+def _route_label(project: str, environment: Optional[str]) -> str:
+    """HTML-safe '<b>project</b> / env' label built from user-supplied text."""
+    return f"<b>{escape(project)}</b> / {escape(environment or 'any environment')}"
+
+
+async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
+    """
+    Edit the message a callback came from. `callback.message` is None or an
+    InaccessibleMessage when the message is too old / deleted, in which case
+    we fall back to a fresh message in the same chat (if we know it).
+    """
+    msg = callback.message
+    if isinstance(msg, Message):
+        try:
+            await msg.edit_text(text, **kwargs)
+            return
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc):
+                return
+            log.warning("edit_text failed, sending new message: %s", exc)
+            await msg.answer(text, **kwargs)
+            return
+    if msg is not None:  # InaccessibleMessage still knows its chat
+        await callback.bot.send_message(msg.chat.id, text, **kwargs)
+
+
+# ── public router — anyone can use these ───────────────────────────────────────
+public_router = Router(name="public")
+
+
+@public_router.message(Command("start", "help"))
+async def cmd_start(message: Message) -> None:
+    await message.answer(
+        "👋 <b>Sentry → Telegram Bot</b>\n\n"
+        "I forward Sentry webhook events to Telegram chats.\n\n"
+        "<b>Commands:</b>\n"
+        "• /subscribe — route Sentry events to this chat\n"
+        "• /routes — view and remove routing rules for this chat\n"
+        "• /add_route &lt;slug&gt; [env] — add a route by project slug\n"
+        "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
+        "• /help — show this message",
+    )
+
+
+@public_router.message(Command("chat_id"))
+async def cmd_chat_id(message: Message) -> None:
+    await message.answer(f"This chat's id: <code>{message.chat.id}</code>")
+
+
+@public_router.message(Command("routes"))
+async def cmd_routes(message: Message, repos: Repositories) -> None:
+    routes = await repos.routes.list_for_chat(message.chat.id)
+    if not routes:
+        await message.answer(
+            "No routing rules for this chat. Use /subscribe or /add_route to add one."
+        )
+        return
+    await message.answer(_ROUTES_PROMPT, reply_markup=routes_keyboard(routes))
+
+
+# ── admin router — gated by AdminMiddleware ────────────────────────────────────
+admin_router = Router(name="admin")
+admin_router.message.middleware(AdminMiddleware())
+admin_router.callback_query.middleware(AdminMiddleware())
+
+
+@admin_router.message(Command("subscribe"))
+async def cmd_subscribe(message: Message, repos: Repositories) -> None:
+    projects = await repos.projects.list_all()
+    if not projects:
+        await message.answer(
+            "No Sentry projects seen yet.\n\n"
+            "Once Sentry sends the first webhook event the project will appear here.\n\n"
+            "You can also add a route right now with:\n"
+            "<code>/add_route &lt;project-slug&gt; [environment]</code>",
+        )
+        return
+    await message.answer(
+        "Select a Sentry project to route to this chat:",
+        reply_markup=projects_keyboard(projects),
+    )
+
+
+@admin_router.callback_query(ProjectCallback.filter())
+async def on_project_selected(
+    callback: CallbackQuery,
+    callback_data: ProjectCallback,
+    repos: Repositories,
+) -> None:
+    projects = await repos.projects.list_all()
+    project = resolve_key(callback_data.key, [p["slug"] for p in projects])
+    if project is None:
+        await callback.answer("Unknown project — run /subscribe again.", show_alert=True)
+        return
+
+    envs = await repos.environments.list_for_project(project)
+    await _safe_edit(
+        callback,
+        f"Project: <b>{escape(project)}</b>\n\nChoose an environment:",
+        reply_markup=environments_keyboard(project, envs),
+    )
+    await callback.answer()
+
+
+@admin_router.callback_query(EnvCallback.filter())
+async def on_env_selected(
+    callback: CallbackQuery,
+    callback_data: EnvCallback,
+    repos: Repositories,
+) -> None:
+    if callback.message is None:
+        await callback.answer("This menu has expired — run /subscribe again.", show_alert=True)
+        return
+
+    projects = await repos.projects.list_all()
+    project = resolve_key(callback_data.project_key, [p["slug"] for p in projects])
+    if project is None:
+        await callback.answer("Unknown project — run /subscribe again.", show_alert=True)
+        return
+
+    environment: Optional[str] = None
+    if callback_data.env_key != ANY_ENV:
+        envs = await repos.environments.list_for_project(project)
+        environment = resolve_key(callback_data.env_key, envs)
+        if environment is None:
+            await callback.answer("Unknown environment — run /subscribe again.", show_alert=True)
+            return
+
+    chat_id = callback.message.chat.id
+    inserted = await repos.routes.add(
+        project, environment, chat_id, created_by=callback.from_user.id
+    )
+    label = _route_label(project, environment)
+    text = (
+        f"✅ Route added: {label} → this chat."
+        if inserted
+        else f"ℹ️ Route already exists: {label} → this chat."
+    )
+    await _safe_edit(callback, text)
+    await callback.answer()
+
+
+@admin_router.message(Command("add_route"))
+async def cmd_add_route(message: Message, repos: Repositories) -> None:
+    """Manual route: /add_route <project-slug> [environment]"""
+    parts = (message.text or "").split()[1:]
+    usage = "Usage: <code>/add_route &lt;project-slug&gt; [environment]</code>"
+    if not parts or len(parts) > 2:
+        await message.answer(usage)
+        return
+
+    project = parts[0]
+    environment: Optional[str] = parts[1] if len(parts) > 1 else None
+    if not _SLUG_RE.match(project) or (environment and len(environment) > 64):
+        await message.answer(
+            "Invalid project slug or environment.\n" + usage
+        )
+        return
+
+    created_by = message.from_user.id if message.from_user else None
+    inserted = await repos.routes.add(
+        project, environment, message.chat.id, created_by=created_by
+    )
+    label = _route_label(project, environment)
+    if inserted:
+        await message.answer(f"✅ Route added: {label} → this chat.")
+    else:
+        await message.answer(f"ℹ️ Route already exists: {label} → this chat.")
+
+
+@admin_router.callback_query(DelRouteCallback.filter())
+async def on_del_route(
+    callback: CallbackQuery,
+    callback_data: DelRouteCallback,
+    repos: Repositories,
+) -> None:
+    if callback.message is None:
+        await callback.answer("This menu has expired — run /routes again.", show_alert=True)
+        return
+
+    chat_id = callback.message.chat.id
+    removed = await repos.routes.remove(callback_data.route_id, chat_id)
+    remaining = await repos.routes.list_for_chat(chat_id)
+    if remaining:
+        await _safe_edit(callback, _ROUTES_PROMPT, reply_markup=routes_keyboard(remaining))
+    else:
+        await _safe_edit(callback, "✅ All routes removed for this chat.")
+    await callback.answer("Route removed." if removed else "Route was already gone.")

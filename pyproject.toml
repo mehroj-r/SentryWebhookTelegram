@@ -1,0 +1,19 @@
+[project]
+name = "sentrywebhooktelegram"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.13",
+    "aiohttp>=3.9",
+    "aiosqlite",
+    "pydantic>=2",
+    "pydantic-settings>=2.3",
+    "sqlalchemy[asyncio]>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
