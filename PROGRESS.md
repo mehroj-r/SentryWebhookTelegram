@@ -22,7 +22,7 @@ Run `.venv/bin/python -m pytest` before and after every change (128 tests at las
 | 11 | Export / import routes | `b6d9ff8` | `src/route_io.py` (format v1, all-or-nothing validation), `RouteRepository.import_routes` merges; `/export` public, `/import` admin; thread ids dropped when importing into another chat |
 | 12 | Audit log, `/routes verbose`, `/whoami` | `9965dde` | `audit_log` table (0008), `repos.audit`; `_audit()` helper in handlers logs only real changes; `is_admin()` in middlewares |
 | 13 | Per-chat admin roles | `6efab16` | `is_admin(bot, chat, user_id, sender_chat)` in middlewares; empty `ADMIN_IDS` → private open, group admins via `get_chat_member` (5 min cache, errors not cached), anonymous admins via `sender_chat`; harness `session.members` |
-| 14 | `/test` command | _next commit_ | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
+| 14 | `/test` command | `08f6894` | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
