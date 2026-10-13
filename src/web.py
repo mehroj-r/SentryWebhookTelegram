@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 # Typed app keys (aiohttp ≥3.9 warns on plain string keys).
 REPOS_KEY: web.AppKey[Repositories] = web.AppKey("repos", Repositories)
+BOT_KEY: web.AppKey[Bot] = web.AppKey("bot", Bot)
 QUEUE_KEY: web.AppKey["asyncio.Queue[ParsedEvent | None]"] = web.AppKey("queue", asyncio.Queue)
 BG_TASKS_KEY: web.AppKey[set["asyncio.Task[Any]"]] = web.AppKey("bg_tasks", set)
 
@@ -174,6 +175,7 @@ def build_app(
     """Build the aiohttp Application with Sentry + Telegram webhook routes."""
     app = web.Application(client_max_size=settings.max_body_bytes)
     app[REPOS_KEY] = repos
+    app[BOT_KEY] = bot
     app[QUEUE_KEY] = queue
     app[BG_TASKS_KEY] = set()
 

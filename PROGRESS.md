@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (137 tests at last update).
+Run `.venv/bin/python -m pytest` before and after every change (142 tests at last update).
 
 ## Done
 
@@ -24,6 +24,7 @@ Run `.venv/bin/python -m pytest` before and after every change (137 tests at las
 | 13 | Per-chat admin roles | `6efab16` | `is_admin(bot, chat, user_id, sender_chat)` in middlewares; empty `ADMIN_IDS` → private open, group admins via `get_chat_member` (5 min cache, errors not cached), anonymous admins via `sender_chat`; harness `session.members` |
 | 14 | `/test` command | `08f6894` | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
 | 15 | Web admin page | `84015ad` | `src/admin_web.py`, `GET /admin`, `ADMIN_TOKEN` (empty → 404); bearer / `X-Admin-Token` / `?token=`; no-store, CSP, no-referrer; `routes.list_all()`, `environments.list_all()` |
+| 16 | Dead-letter retry | _next commit_ | failed rows now keep `text`; `delivery.retry_failed()` marks originals `retried` and logs a fresh row; `/retry_failed [N]` (admin); `POST /admin/retry` (token in form/header, not query) |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
@@ -32,7 +33,6 @@ Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 Routing and management
 
 Operations and observability
-- [ ] **Dead letter handling** — mark `deliveries.status='failed'` rows retryable; `/retry_failed` (admin) re-sends last N failed for the chat using stored `text`; admin page button (page is GET-only today — a POST form needs CSRF thought; token in a hidden field is fine since there are no cookies).
 - [ ] **Metrics endpoint** — `/metrics` Prometheus text format, hand-rolled counters in `src/metrics.py` (received, deduplicated, rejected_signature, delivered, failed, skipped, queue_size gauge).
 - [ ] **Postgres option** — replace `sqlite_insert` upserts in `repositories.py` with dialect-aware helper (`insert(...).on_conflict_do_*` for both via `sqlalchemy.dialects.postgresql`/`sqlite` chosen from `session.bind.dialect.name`); `make_url` already accepts full URLs; add `asyncpg` optional extra; make pragmas SQLite-only (already). Cannot be tested locally without Postgres — keep SQLite tests green.
 - [ ] **Docker / compose / systemd / GitHub Actions** — `Dockerfile` (python:3.12-slim, uv), `docker-compose.yml` (volume for `data.db`), `deploy/sentry-telegram.service`, `.github/workflows/ci.yml` running pytest; `.dockerignore`.

@@ -14,6 +14,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Document, Message, U
 
 from ..chat_settings import format_local, parse_quiet_range, parse_timezone
 from ..db import Repositories
+from ..delivery import retry_failed
 from ..filters import LEVELS, normalize_level, parse_actions, parse_duration, skip_reason
 from ..route_io import MAX_BYTES, SLUG_RE as _SLUG_RE, export_routes, parse_import
 from ..samples import KINDS as SAMPLE_KINDS, sample_event
@@ -102,7 +103,7 @@ async def cmd_start(message: Message) -> None:
         "• Run /subscribe or /add_route inside a forum topic to post there\n"
         "• /export — download this chat's routes as JSON; /import — load them (attach or reply to the file)\n"
         "• /test [issue|error|event_alert|metric_alert|release] — post a sample alert here\n"
-        "• /last — show the last events delivered to this chat\n"
+        "• /last — show the last events delivered to this chat; /retry_failed [N] — re-send failed ones\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID); /whoami — your id and permissions\n"
         "• /help — show this message",
     )
@@ -184,7 +185,7 @@ async def cmd_whoami(message: Message) -> None:
     await message.answer("\n".join(lines))
 
 
-_STATUS_ICON = {"sent": "✅", "failed": "❌", "skipped": "⏭"}
+_STATUS_ICON = {"sent": "✅", "failed": "❌", "skipped": "⏭", "digest": "📰", "retried": "🔁"}
 
 
 @public_router.message(Command("last"))
@@ -617,6 +618,25 @@ async def cmd_test(message: Message, repos: Repositories) -> None:
         else:
             verdict = "⏭ This chat's filters would skip it: " + escape(reasons[0], quote=False)
     await message.answer(f"🧪 That was a test message.\n{verdict}")
+
+
+@admin_router.message(Command("retry_failed"))
+async def cmd_retry_failed(message: Message, repos: Repositories) -> None:
+    """/retry_failed [N] — re-send this chat's last N failed deliveries (default 10, max 50)."""
+    parts = (message.text or "").split()[1:]
+    usage = "Usage: <code>/retry_failed [N]</code> (1–50, default 10)"
+    if len(parts) > 1 or (parts and not (parts[0].isdigit() and 1 <= int(parts[0]) <= 50)):
+        await message.answer(usage)
+        return
+    limit = int(parts[0]) if parts else 10
+    if not await repos.deliveries.retryable(message.chat.id, limit=1):
+        await message.answer("Nothing to retry — no failed deliveries with stored text in this chat.")
+        return
+    sent, failed = await retry_failed(message.bot, repos, message.chat.id, limit)
+    await _audit(repos, message.chat.id, message.from_user, "retry_failed", f"{sent} sent, {failed} failed")
+    text = f"🔁 Retried {sent + failed} delivery(ies): {sent} sent"
+    text += f", {failed} failed again (see /last)." if failed else "."
+    await message.answer(text)
 
 
 @admin_router.callback_query(DelRouteCallback.filter())

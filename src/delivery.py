@@ -219,7 +219,7 @@ async def _record(
             status=status or ("sent" if result.ok else "failed"),
             error=result.error,
             tg_message_id=result.message_id,
-            text=text if result.ok else None,
+            text=text if status is None else None,  # sent or failed: keep for edits / retries
             thread_id=target.thread_id,
         )
     except Exception:
@@ -345,6 +345,33 @@ async def send_event(
         await _record(repos, event, target, result, text)
         if prior and result.ok:
             await _stamp_original(bot, repos, event, chat_id, prior)
+
+
+async def retry_failed(
+    bot: Bot, repos: Repositories, chat_id: Optional[int] = None, limit: int = 10
+) -> tuple[int, int]:
+    """
+    Re-send the last `limit` failed deliveries (one chat, or all chats) using
+    their stored text. Each original row becomes `retried` so it is never
+    re-sent twice; the attempt is logged as a fresh sent/failed row (which can
+    itself be retried later). Returns (sent, failed).
+    """
+    sent = failed = 0
+    for row in await repos.deliveries.retryable(chat_id, limit):
+        result = await _send_to_chat(bot, row["chat_id"], row["text"], thread_id=row["thread_id"])
+        await repos.deliveries.set_status(row["id"], "retried")
+        await repos.deliveries.record(
+            chat_id=row["chat_id"], resource=row["resource"], action=row["action"],
+            project=row["project"], environment=row["environment"], issue_id=row["issue_id"],
+            title=row["title"], status="sent" if result.ok else "failed",
+            error=result.error, tg_message_id=result.message_id, text=row["text"],
+            thread_id=row["thread_id"],
+        )
+        if result.ok:
+            sent += 1
+        else:
+            failed += 1
+    return sent, failed
 
 
 async def flush_digests(bot: Bot, repos: Repositories, force: bool = False) -> int:

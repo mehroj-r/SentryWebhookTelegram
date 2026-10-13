@@ -80,11 +80,12 @@ class Delivery(Base):
     environment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     issue_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
-    status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped
+    status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped | digest | retried
     error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     thread_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    # The HTML we sent, kept so later lifecycle events can edit the message.
+    # The HTML we sent (or failed to send), kept so later lifecycle events can
+    # edit the message and failed deliveries can be retried.
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 

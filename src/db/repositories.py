@@ -496,6 +496,35 @@ class DeliveryRepository(BaseRepository):
             rows = (await session.execute(stmt)).scalars().all()
             return [_delivery_dict(r) for r in rows]
 
+    async def retryable(self, chat_id: Optional[int] = None, limit: int = 10) -> list[dict]:
+        """Most recent failed deliveries that kept their text (all chats when chat_id is None), oldest first."""
+        stmt = (
+            select(Delivery)
+            .where(Delivery.status == "failed", Delivery.text.is_not(None))
+            .order_by(Delivery.created_at.desc(), Delivery.id.desc())
+            .limit(limit)
+        )
+        if chat_id is not None:
+            stmt = stmt.where(Delivery.chat_id == chat_id)
+        async with self._sessionmaker() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_delivery_dict(r) for r in reversed(rows)]
+
+    async def count_retryable(self) -> int:
+        async with self._sessionmaker() as session:
+            return (
+                await session.scalar(
+                    select(func.count()).select_from(Delivery).where(
+                        Delivery.status == "failed", Delivery.text.is_not(None)
+                    )
+                )
+            ) or 0
+
+    async def set_status(self, delivery_id: int, status: str) -> None:
+        async with self._sessionmaker() as session:
+            await session.execute(update(Delivery).where(Delivery.id == delivery_id).values(status=status))
+            await session.commit()
+
     async def last_message_for_issue(self, chat_id: int, issue_id: str) -> Optional[int]:
         """Telegram message id of the most recent successful post about an issue."""
         row = await self.last_for_issue(chat_id, issue_id)
