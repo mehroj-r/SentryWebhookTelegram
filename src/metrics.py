@@ -56,7 +56,7 @@ _START = time.time()
 
 webhooks_received = Counter("webhooks_received", "Sentry webhooks accepted and queued, by resource.", ("resource",))
 webhooks_rejected = Counter(
-    "webhooks_rejected", "Sentry webhooks rejected, by reason (signature, json, busy).", ("reason",)
+    "webhooks_rejected", "Sentry webhooks rejected, by reason (signature, stale, json, busy).", ("reason",)
 )
 webhooks_deduplicated = Counter("webhooks_deduplicated", "Sentry webhooks dropped as duplicate Request-IDs.")
 deliveries = Counter(

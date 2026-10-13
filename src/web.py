@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import time
 import logging
 from typing import Any
 
@@ -55,6 +56,14 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
         log.warning("Rejected Sentry request with invalid signature from %s", request.remote)
         metrics.webhooks_rejected.inc(reason="signature")
         return web.Response(status=401, text="Invalid signature")
+
+    # 2b. Replay window. Sentry signs only the body, so a determined attacker
+    #     can forge this header; it still stops verbatim replays of captured
+    #     requests, and Request-ID dedup below catches exact duplicates.
+    if _is_stale(request.headers.get("Sentry-Hook-Timestamp")):
+        log.warning("Rejected stale/invalid Sentry-Hook-Timestamp from %s", request.remote)
+        metrics.webhooks_rejected.inc(reason="stale")
+        return web.Response(status=401, text="Stale request")
 
     # 3. Decode JSON
     resource = request.headers.get("Sentry-Hook-Resource", "")
@@ -114,6 +123,20 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
     _spawn(app, _learn_project(repos, event, payload))
 
     return web.Response(status=200, text="ok")
+
+
+def _is_stale(header: str | None, now: float | None = None) -> bool:
+    """True when the timestamp is unparseable or outside REPLAY_WINDOW_SECONDS. Missing → not stale."""
+    window = settings.replay_window_seconds
+    if window <= 0 or not header:
+        return False
+    try:
+        ts = float(header)
+    except ValueError:
+        return True
+    if ts > 1e11:  # milliseconds
+        ts /= 1000
+    return abs((now if now is not None else time.time()) - ts) > window
 
 
 async def _attach_org(repos: Repositories, event: ParsedEvent, secret_label: str) -> None:

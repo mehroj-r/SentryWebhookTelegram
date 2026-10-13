@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     admin_token: str = ""
     # Prometheus /metrics: open when empty, else requires "Authorization: Bearer <token>".
     metrics_token: str = ""
+    # Reject webhooks whose Sentry-Hook-Timestamp is further than this from now
+    # (seconds, either direction). 0 disables. Requests without the header pass.
+    replay_window_seconds: int = 300
     # How long to remember Sentry Request-IDs for de-duplication.
     seen_request_ttl_days: int = 7
 
