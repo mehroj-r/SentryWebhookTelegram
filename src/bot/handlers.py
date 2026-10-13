@@ -3,7 +3,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Optional
 
@@ -187,6 +187,43 @@ async def cmd_last(message: Message, repos: Repositories, lang: str) -> None:
         if r["error"]:
             line += f"\n    ↳ <i>{escape(r['error'][:120])}</i>"
         lines.append(line)
+    await message.answer("\n".join(lines))
+
+
+# "retried" rows are superseded by the retry's own row, so they aren't counted.
+_STATS_STATUSES = ("sent", "failed", "skipped", "digest")
+_STATS_TOP = 10
+
+
+def _stats_line(lang: str, period_key: str, by_project: dict[str, dict[str, int]]) -> str:
+    totals = {s: sum(p.get(s, 0) for p in by_project.values()) for s in _STATS_STATUSES}
+    breakdown = ", ".join(
+        f"{_STATUS_ICON[s]} {totals[s]} {t(lang, 'status.' + s)}" for s in _STATS_STATUSES if totals[s]
+    )
+    return t(lang, "stats.period", period=t(lang, period_key), total=sum(totals.values()), breakdown=breakdown or "—")
+
+
+@public_router.message(Command("stats"))
+async def cmd_stats(message: Message, repos: Repositories, lang: str) -> None:
+    now = datetime.now(timezone.utc)
+    week = await repos.deliveries.counts_by_project(message.chat.id, now - timedelta(days=7))
+    if not any(sum(v.get(s, 0) for s in _STATS_STATUSES) for v in week.values()):
+        await message.answer(t(lang, "stats.empty"))
+        return
+    day = await repos.deliveries.counts_by_project(message.chat.id, now - timedelta(hours=24))
+    lines = [t(lang, "stats.title"), _stats_line(lang, "stats.24h", day), _stats_line(lang, "stats.7d", week)]
+
+    def _total(counts: dict[str, int]) -> int:
+        return sum(counts.get(s, 0) for s in _STATS_STATUSES)
+
+    ranked = sorted(((p, c) for p, c in week.items() if _total(c)), key=lambda pc: (-_total(pc[1]), pc[0]))
+    lines += ["", t(lang, "stats.top")]
+    for project, counts in ranked[:_STATS_TOP]:
+        extras = " ".join(f"{_STATUS_ICON[s]}{counts[s]}" for s in ("failed", "skipped", "digest") if counts.get(s))
+        day_total = _total(day.get(project, {}))
+        lines.append(
+            f"• <code>{escape(project)}</code> — {_total(counts)} (24h: {day_total})" + (f"  {extras}" if extras else "")
+        )
     await message.answer("\n".join(lines))
 
 

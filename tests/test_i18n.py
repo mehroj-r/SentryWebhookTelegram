@@ -28,7 +28,8 @@ def test_catalog_complete_and_consistent(key):
 def test_every_key_used_in_code_exists():
     used = set()
     for path in SRC.rglob("*.py"):
-        used |= set(re.findall(r"""\bt\(\s*[\w.]+\s*,\s*["']([\w.]+)["']""", path.read_text()))
+        # literal keys only (followed by "," or ")"); dynamic ones like "status." + s are tested by use
+        used |= set(re.findall(r"""\bt\(\s*[\w.]+\s*,\s*["']([\w.]+)["']\s*[,)]""", path.read_text()))
     assert used, "regex found no t() calls"
     assert used <= set(CATALOG), used - set(CATALOG)
 

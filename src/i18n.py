@@ -31,7 +31,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "• Run /subscribe or /add_route inside a forum topic to post there\n"
             "• /export — download this chat's routes as JSON; /import — load them (attach or reply to the file)\n"
             "• /test [issue|error|event_alert|metric_alert|release] — post a sample alert here\n"
-            "• /last — show the last events delivered to this chat; /retry_failed [N] — re-send failed ones\n"
+            "• /last — show the last events delivered to this chat; /stats — counts per project; /retry_failed [N] — re-send failed ones\n"
             "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID); /whoami — your id and permissions\n"
             "• /help — show this message"
         ),
@@ -49,7 +49,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "• Запустите /subscribe или /add_route внутри темы форума, чтобы писать туда\n"
             "• /export — скачать маршруты чата в JSON; /import — загрузить их (приложите файл или ответьте на него)\n"
             "• /test [issue|error|event_alert|metric_alert|release] — отправить пример оповещения\n"
-            "• /last — последние доставки в этот чат; /retry_failed [N] — повторить неудачные\n"
+            "• /last — последние доставки в этот чат; /stats — статистика по проектам; /retry_failed [N] — повторить неудачные\n"
             "• /chat_id — id этого чата (для DEFAULT_CHAT_ID); /whoami — ваш id и права\n"
             "• /help — показать это сообщение"
         ),
@@ -67,7 +67,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "• Forum mavzusiga yozish uchun /subscribe yoki /add_route ni oʻsha mavzu ichida yuboring\n"
             "• /export — chat yoʻnalishlarini JSON qilib yuklab olish; /import — ularni yuklash (fayl biriktiring yoki unga javob bering)\n"
             "• /test [issue|error|event_alert|metric_alert|release] — namuna ogohlantirish yuborish\n"
-            "• /last — shu chatga soʻnggi yetkazishlar; /retry_failed [N] — muvaffaqiyatsizlarini qayta yuborish\n"
+            "• /last — shu chatga soʻnggi yetkazishlar; /stats — loyihalar boʻyicha statistika; /retry_failed [N] — muvaffaqiyatsizlarini qayta yuborish\n"
             "• /chat_id — shu chat id si (DEFAULT_CHAT_ID uchun); /whoami — sizning id va huquqlaringiz\n"
             "• /help — ushbu xabarni koʻrsatish"
         ),
@@ -408,6 +408,34 @@ CATALOG: dict[str, dict[str, str]] = {
         "ru": "📥 Импортировано маршрутов: {n} (добавлено: {added}, обновлено: {updated}).",
         "uz": "📥 Import qilingan yoʻnalishlar: {n} (qoʻshildi: {added}, yangilandi: {updated}).",
     },
+    # ── stats ──────────────────────────────────────────────────────────────────
+    "stats.title": {
+        "en": "<b>Delivery stats for this chat</b>",
+        "ru": "<b>Статистика доставок в этот чат</b>",
+        "uz": "<b>Shu chatga yetkazishlar statistikasi</b>",
+    },
+    "stats.period": {
+        "en": "<b>{period}</b>: {total} event(s) — {breakdown}",
+        "ru": "<b>{period}</b>: событий {total} — {breakdown}",
+        "uz": "<b>{period}</b>: {total} ta hodisa — {breakdown}",
+    },
+    "stats.24h": {"en": "Last 24 hours", "ru": "За 24 часа", "uz": "Soʻnggi 24 soat"},
+    "stats.7d": {"en": "Last 7 days", "ru": "За 7 дней", "uz": "Soʻnggi 7 kun"},
+    "stats.top": {
+        "en": "<b>Top projects (7 days):</b>",
+        "ru": "<b>Самые активные проекты (7 дней):</b>",
+        "uz": "<b>Eng faol loyihalar (7 kun):</b>",
+    },
+    "stats.empty": {
+        "en": "No events for this chat in the last 7 days.",
+        "ru": "За последние 7 дней событий для этого чата не было.",
+        "uz": "Soʻnggi 7 kunda bu chat uchun hodisalar boʻlmadi.",
+    },
+    "status.sent": {"en": "sent", "ru": "доставлено", "uz": "yetkazildi"},
+    "status.failed": {"en": "failed", "ru": "ошибки", "uz": "xato"},
+    "status.skipped": {"en": "skipped", "ru": "пропущено", "uz": "oʻtkazib yuborildi"},
+    "status.digest": {"en": "in digests", "ru": "в сводках", "uz": "jamlanmada"},
+    "status.retried": {"en": "retried", "ru": "повторено", "uz": "qayta yuborildi"},
     # ── test ───────────────────────────────────────────────────────────────────
     "test.usage": {
         "en": "Usage: <code>/test [{kinds}]</code>",

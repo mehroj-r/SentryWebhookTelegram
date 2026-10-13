@@ -572,6 +572,25 @@ class DeliveryRepository(BaseRepository):
             ).all()
             return {status: count for status, count in rows}
 
+    async def counts_by_project(self, chat_id: int, since: datetime) -> dict[str, dict[str, int]]:
+        """project → {status: count} for one chat's deliveries since `since` (digest sends excluded)."""
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(Delivery.project, Delivery.status, func.count())
+                    .where(
+                        Delivery.chat_id == chat_id,
+                        Delivery.created_at >= since,
+                        Delivery.resource != "digest",
+                    )
+                    .group_by(Delivery.project, Delivery.status)
+                )
+            ).all()
+        out: dict[str, dict[str, int]] = {}
+        for project, status, count in rows:
+            out.setdefault(project or "?", {})[status] = count
+        return out
+
     async def purge_older_than(self, max_age: timedelta) -> int:
         cutoff = _utcnow() - max_age
         async with self._sessionmaker() as session:

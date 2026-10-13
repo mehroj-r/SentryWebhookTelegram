@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (279 tests + 1 Postgres-only at last update; ~115 are per-key catalog checks).
+Run `.venv/bin/python -m pytest` before and after every change (293 tests + 1 Postgres-only at last update; ~115 are per-key catalog checks).
 For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv/bin/python -m pytest` against a throwaway cluster (`initdb` + `pg_ctl ... -o "-p 55432 -k '' -c listen_addresses=127.0.0.1"`); `asyncpg` is installed in `.venv`.
 
 ## Done
@@ -33,6 +33,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 21 | Startup self-check | `40c84df` | `src/selfcheck.py` (`get_me`, webhook URL / last error, `DEFAULT_CHAT_ID` reachability, routing summary, warns when events would go nowhere); runs as a background task from `main()` |
 | 22a | Localisation: bot replies | `15d6117` | `src/i18n.py` (`t(lang, key, **kw)`, catalog with en/ru/uz side by side); `LanguageMiddleware` (outer, both routers) injects `lang`: chat `/lang` → user's Telegram language in private chats → en; keyboards take `lang`. Route-import validation errors and filter skip reasons stay English |
 | 22b | Localisation: event formatting | `a943c0e` | `fmt.*` catalog keys + `plural()` (ru one/few/many); `format_event/format_digest/format_burst_summary/status_footer` take `lang` (default en, English output byte-identical); `delivery._chat_lang()`, one rendering per language per event. Sentry action tokens (CREATED…) stay untranslated |
+| 23 | `/stats` | _next commit_ | `deliveries.counts_by_project(chat_id, since)` (digest sends excluded); public `/stats`: 24h + 7d totals by status and top 10 projects; `retried` rows not counted; localised |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
@@ -43,7 +44,6 @@ Routing and management
 Operations and observability
 
 Polish
-- [ ] **`/stats`** — per-project counts over 24h/7d from `deliveries` (`count_by_status` exists; add group-by project).
 - [ ] **Plain-text format mode** — `chat_settings.format` column exists; `/format plain|html`; add a `strip_html()` in formatters and send with `parse_mode=None` when plain.
 - [ ] **Replay protection** — reject if `Sentry-Hook-Timestamp` older than `REPLAY_WINDOW_SECONDS` (default 300); keep dedup. In `src/web.py` before dedup.
 - [ ] **Interactive issue actions** — inline buttons Resolve / Ignore / Assign-to-me / Open on issue messages; needs `SENTRY_API_TOKENS` per org label and `installations.org_slug`; PUT `/api/0/organizations/{org}/issues/{id}/`. Depends on threading (issue_id in deliveries) and multi-org. Put in `src/sentry/api.py` with aiohttp client; callbacks in a new `issue_router`.
