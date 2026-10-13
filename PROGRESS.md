@@ -29,7 +29,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 17 | Prometheus `/metrics` | `81c6964` | `src/metrics.py` (hand-rolled labelled counters, `metrics.reset()` for tests); webhooks received/rejected/deduplicated, deliveries by status (counted in `_record` + retries), queue gauge; optional `METRICS_TOKEN` |
 | 18 | PostgreSQL support | `a8cdb79` | `_insert(session, Model)` picks the dialect's `insert` for ON CONFLICT; `make_url` maps `postgres(ql)://` → asyncpg; `postgres` extra; `TEST_DATABASE_URL` runs the whole suite (and a drift check) on PG — all green |
 | 19 | Docker / compose / systemd / CI | `d827caf` | `Dockerfile` (3.12-slim + uv, non-root, `/data` volume, healthcheck), `docker-compose.yml` (optional `postgres` profile), `deploy/sentry-telegram.service` (hardened), `.github/workflows/ci.yml` (3.12 + 3.14, Postgres service job, docker build). Image build not verified locally (no Docker daemon access); deps + suite verified on a 3.12 venv |
-| 20 | Polling fallback | _next commit_ | `USE_WEBHOOK=false`: webhook URL/secret optional; `main.start_telegram()` deletes webhook and runs `dp.start_polling` as a task (shutdown via `dp.stop_polling()`; task death stops the app); `build_app` skips the Telegram route |
+| 20 | Polling fallback | `733bd6b` | `USE_WEBHOOK=false`: webhook URL/secret optional; `main.start_telegram()` deletes webhook and runs `dp.start_polling` as a task (shutdown via `dp.stop_polling()`; task death stops the app); `build_app` skips the Telegram route |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
