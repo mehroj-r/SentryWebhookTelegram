@@ -30,6 +30,7 @@ from aiogram.types import (
 )
 
 from src.bot.handlers import admin_router, public_router
+from src.bot.issue_actions import issue_router
 
 ADMIN = User(id=1, is_bot=False, first_name="Admin")
 OTHER = User(id=42, is_bot=False, first_name="Other")
@@ -115,6 +116,7 @@ def _dispatcher() -> Dispatcher:
         _DP = Dispatcher()
         _DP.include_router(public_router)
         _DP.include_router(admin_router)
+        _DP.include_router(issue_router)
     return _DP
 
 
@@ -125,6 +127,7 @@ class Harness:
         self.bot.session = self.session  # type: ignore[assignment]
         self.dp = _dispatcher()
         self.dp["repos"] = repos
+        self.dp["sentry_api"] = None  # tests that need it set a fake
         self._update_ids = itertools.count(1)
         self._msg_ids = itertools.count(1)
 

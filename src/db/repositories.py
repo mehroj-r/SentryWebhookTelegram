@@ -20,6 +20,7 @@ from .models import (
     Project,
     Route,
     SeenRequest,
+    SentryIdentity,
 )
 
 
@@ -802,6 +803,29 @@ class AuditRepository(BaseRepository):
             ]
 
 
+# ── Sentry identities ──────────────────────────────────────────────────────────
+
+
+class SentryIdentityRepository(BaseRepository):
+    async def get(self, telegram_user_id: int) -> Optional[str]:
+        async with self._sessionmaker() as session:
+            row = await session.get(SentryIdentity, telegram_user_id)
+            return row.sentry_user if row else None
+
+    async def set(self, telegram_user_id: int, sentry_user: Optional[str]) -> None:
+        """Link (or with None, unlink) a Telegram user to a Sentry user."""
+        async with self._sessionmaker() as session:
+            row = await session.get(SentryIdentity, telegram_user_id)
+            if sentry_user is None:
+                if row is not None:
+                    await session.delete(row)
+            elif row is None:
+                session.add(SentryIdentity(telegram_user_id=telegram_user_id, sentry_user=sentry_user, updated_at=_utcnow()))
+            else:
+                row.sentry_user, row.updated_at = sentry_user, _utcnow()
+            await session.commit()
+
+
 # ── Container ──────────────────────────────────────────────────────────────────
 
 
@@ -818,3 +842,4 @@ class Repositories:
         self.digests = DigestRepository(sessionmaker)
         self.chat_settings = ChatSettingsRepository(sessionmaker)
         self.audit = AuditRepository(sessionmaker)
+        self.identities = SentryIdentityRepository(sessionmaker)

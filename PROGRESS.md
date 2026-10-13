@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (302 tests + 1 Postgres-only at last update; ~115 are per-key catalog checks).
+Run `.venv/bin/python -m pytest` before and after every change (327 tests + 1 Postgres-only at last update; ~115 are per-key catalog checks).
 For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv/bin/python -m pytest` against a throwaway cluster (`initdb` + `pg_ctl ... -o "-p 55432 -k '' -c listen_addresses=127.0.0.1"`); `asyncpg` is installed in `.venv`.
 
 ## Done
@@ -36,8 +36,9 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 23 | `/stats` | `2bf3bf9` | `deliveries.counts_by_project(chat_id, since)` (digest sends excluded); public `/stats`: 24h + 7d totals by status and top 10 projects; `retried` rows not counted; localised |
 | 24 | Plain-text format mode | `443cf10` | `/format html|plain` (admin, audited); `strip_html()` in formatters (links → "text (url)"); conversion happens only at send/edit time (`_send_to_chat(plain=)`, stamping, retries, digests, bursts, `/test`) — stored delivery text stays HTML. Bot command replies stay HTML |
 | 25 | Replay protection | `0e17b2d` | `REPLAY_WINDOW_SECONDS` (default 300, 0 off); `_is_stale()` after signature check, before dedup; ± window (clock skew), ms timestamps OK, missing header passes, garbage rejected; metric reason `stale`. Header is not signed by Sentry → only stops verbatim replays. If Sentry retries a 503 later than the window, that retry is rejected |
+| 26 | Interactive issue actions | _next commit_ | `src/sentry/api.py` (`SentryAPI.update_issue`, `pick_org`), `src/bot/issue_actions.py` (`IssueCallback`, `issue_keyboard`, `issue_router`, `/sentry_user`); `SENTRY_API_TOKEN`+`SENTRY_ORG_SLUG` or `SENTRY_API_TOKENS`, `SENTRY_API_URL`; `sentry_identities` table (0009). Buttons on first post only; kept on stamped original for assigned/unresolved, removed otherwise. Clicks: admin-gated + chat must have an alert for that issue |
 
-Migrations so far: `0001`…`0008`. Next revision id: `0009`.
+Migrations so far: `0001`…`0009`. Next revision id: `0010`.
 
 ## Remaining (suggested order)
 
@@ -46,7 +47,6 @@ Routing and management
 Operations and observability
 
 Polish
-- [ ] **Interactive issue actions** — inline buttons Resolve / Ignore / Assign-to-me / Open on issue messages; needs `SENTRY_API_TOKENS` per org label and `installations.org_slug`; PUT `/api/0/organizations/{org}/issues/{id}/`. Depends on threading (issue_id in deliveries) and multi-org. Put in `src/sentry/api.py` with aiohttp client; callbacks in a new `issue_router`.
 - [ ] **README** — setup, Sentry internal-integration configuration (webhook URL, client secret, resources to enable), command reference, env var table, deployment notes.
 
 ## Conventions

@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     sentry_client_secret: str = ""
     sentry_client_secrets: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
 
+    # Sentry Web API (optional) — enables Resolve / Ignore / Assign buttons on
+    # issue alerts. Needs an internal-integration token with Issue & Event
+    # "Read & Write". One org: SENTRY_API_TOKEN + SENTRY_ORG_SLUG. Several:
+    # SENTRY_API_TOKENS as JSON {"acme": "...", "beta": "..."} or
+    # "acme:token1,beta:token2", keyed by organisation slug (or by the
+    # SENTRY_CLIENT_SECRETS label when that differs).
+    sentry_api_url: str = "https://sentry.io"
+    sentry_api_token: str = ""
+    sentry_org_slug: str = ""
+    sentry_api_tokens: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+
     # App
     db_path: str = "data.db"
     default_chat_id: Optional[int] = None
@@ -79,7 +90,7 @@ class Settings(BaseSettings):
             return [int(part.strip()) for part in cleaned.split(",") if part.strip()]
         raise ValueError("ADMIN_IDS must be a list of integers")
 
-    @field_validator("sentry_client_secrets", mode="before")
+    @field_validator("sentry_client_secrets", "sentry_api_tokens", mode="before")
     @classmethod
     def _parse_client_secrets(cls, value: Any) -> Any:
         if value is None:
@@ -98,10 +109,10 @@ class Settings(BaseSettings):
             for pair in text.split(","):
                 label, sep, secret = pair.partition(":")
                 if not sep or not label.strip() or not secret.strip():
-                    raise ValueError("SENTRY_CLIENT_SECRETS must be 'label:secret,label2:secret2' or JSON")
+                    raise ValueError("expected 'label:secret,label2:secret2' or JSON")
                 out[label.strip()] = secret.strip()
             return out
-        raise ValueError("SENTRY_CLIENT_SECRETS must be a mapping")
+        raise ValueError("expected a mapping")
 
     @model_validator(mode="after")
     def _require_some_sentry_secret(self) -> "Settings":
@@ -125,6 +136,20 @@ class Settings(BaseSettings):
             out["default"] = self.sentry_client_secret
         out.update(self.sentry_client_secrets)
         return out
+
+    @property
+    def sentry_api_orgs(self) -> dict[str, str]:
+        """org slug (or label) → Web API token."""
+        out: dict[str, str] = {}
+        if self.sentry_api_token and self.sentry_org_slug:
+            out[self.sentry_org_slug] = self.sentry_api_token
+        out.update(self.sentry_api_tokens)
+        return out
+
+    @field_validator("sentry_api_url")
+    @classmethod
+    def _normalize_api_url(cls, value: str) -> str:
+        return value.strip().rstrip("/")
 
     @property
     def multi_org(self) -> bool:

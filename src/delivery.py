@@ -14,9 +14,10 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
     TelegramServerError,
 )
-from aiogram.types import ReplyParameters
+from aiogram.types import InlineKeyboardMarkup, ReplyParameters
 
 from . import metrics
+from .bot.issue_actions import KEEP_BUTTONS_ACTIONS, issue_keyboard
 from .burst import BurstCollapser, Summary
 from .chat_settings import quiet_until
 from .config import settings
@@ -159,6 +160,7 @@ async def _send_to_chat(
     reply_to: Optional[int] = None,
     thread_id: Optional[int] = None,
     plain: bool = False,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> SendResult:
     """
     Send a message, honouring Telegram rate limits and retrying transient
@@ -171,6 +173,8 @@ async def _send_to_chat(
         ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
     )
     extra: dict = {}
+    if reply_markup is not None:
+        extra["reply_markup"] = reply_markup
     if plain:
         text, extra["parse_mode"] = strip_html(text), None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -266,13 +270,21 @@ async def _stamp_original(
     new_text = append_footer(prior["text"], footer)
     if new_text is None:
         return
+    # Editing without reply_markup drops the action buttons — right after a
+    # resolve/ignore; keep them while the issue is still open.
+    extra: dict = {}
+    if event.action in KEEP_BUTTONS_ACTIONS:
+        markup = issue_keyboard(event, lang, stamping=True)
+        if markup is not None:
+            extra["reply_markup"] = markup
     try:
         if plain:
             await bot.edit_message_text(
-                strip_html(new_text), chat_id=chat_id, message_id=prior["tg_message_id"], parse_mode=None
+                strip_html(new_text), chat_id=chat_id, message_id=prior["tg_message_id"], parse_mode=None,
+                **extra,
             )
         else:
-            await bot.edit_message_text(new_text, chat_id=chat_id, message_id=prior["tg_message_id"])
+            await bot.edit_message_text(new_text, chat_id=chat_id, message_id=prior["tg_message_id"], **extra)
         await repos.deliveries.update_text(prior["id"], new_text)
     except TelegramRetryAfter:
         log.debug("Rate limited while stamping message %s; skipping", prior["tg_message_id"])
@@ -377,6 +389,8 @@ async def send_event(
             reply_to=prior["tg_message_id"] if prior else None,
             thread_id=target.thread_id,
             plain=plain,
+            # buttons on the first post about an issue only, not on threaded follow-ups
+            reply_markup=issue_keyboard(event, lang) if prior is None else None,
         )
         await _record(repos, event, target, result, text)
         if prior and result.ok:

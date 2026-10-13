@@ -12,8 +12,10 @@ from aiogram.client.default import DefaultBotProperties
 from src.config import settings
 from src.db import Database, Repositories
 from src.bot.handlers import admin_router, public_router
+from src.bot.issue_actions import issue_router
 from src.delivery import delivery_worker
 from src.selfcheck import self_check
+from src.sentry.api import SentryAPI
 from src.web import build_app
 
 logging.basicConfig(
@@ -80,7 +82,10 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(public_router)
     dp.include_router(admin_router)
+    dp.include_router(issue_router)
     dp["repos"] = repos  # handlers declare `repos: Repositories`
+    sentry_api = SentryAPI(settings.sentry_api_url, settings.sentry_api_orgs)
+    dp["sentry_api"] = sentry_api
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=settings.queue_max_size)
     runner: web.AppRunner | None = None
@@ -160,6 +165,7 @@ async def main() -> None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
+        await sentry_api.close()
         await db.close()
         await bot.session.close()
         log.info("Bye.")

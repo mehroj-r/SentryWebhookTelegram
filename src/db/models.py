@@ -152,3 +152,13 @@ class AuditEntry(Base):
     user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     action: Mapped[str] = mapped_column(String, nullable=False)
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SentryIdentity(Base):
+    """Telegram user → Sentry user (username or email) for "Assign to me"."""
+
+    __tablename__ = "sentry_identities"
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sentry_user: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

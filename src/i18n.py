@@ -33,6 +33,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "• /test [issue|error|event_alert|metric_alert|release] — post a sample alert here\n"
             "• /last — show the last events delivered to this chat; /stats — counts per project; /retry_failed [N] — re-send failed ones\n"
             "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID); /whoami — your id and permissions\n"
+            "• /sentry_user &lt;username|email&gt; — who “Assign to me” assigns issues to\n"
             "• /help — show this message"
         ),
         "ru": (
@@ -51,6 +52,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "• /test [issue|error|event_alert|metric_alert|release] — отправить пример оповещения\n"
             "• /last — последние доставки в этот чат; /stats — статистика по проектам; /retry_failed [N] — повторить неудачные\n"
             "• /chat_id — id этого чата (для DEFAULT_CHAT_ID); /whoami — ваш id и права\n"
+            "• /sentry_user &lt;username|email&gt; — на кого назначать по кнопке «Назначить на меня»\n"
             "• /help — показать это сообщение"
         ),
         "uz": (
@@ -69,6 +71,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "• /test [issue|error|event_alert|metric_alert|release] — namuna ogohlantirish yuborish\n"
             "• /last — shu chatga soʻnggi yetkazishlar; /stats — loyihalar boʻyicha statistika; /retry_failed [N] — muvaffaqiyatsizlarini qayta yuborish\n"
             "• /chat_id — shu chat id si (DEFAULT_CHAT_ID uchun); /whoami — sizning id va huquqlaringiz\n"
+            "• /sentry_user &lt;username|email&gt; — “Menga biriktirish” tugmasi kimga biriktirishi\n"
             "• /help — ushbu xabarni koʻrsatish"
         ),
     },
@@ -446,6 +449,59 @@ CATALOG: dict[str, dict[str, str]] = {
     "status.skipped": {"en": "skipped", "ru": "пропущено", "uz": "oʻtkazib yuborildi"},
     "status.digest": {"en": "in digests", "ru": "в сводках", "uz": "jamlanmada"},
     "status.retried": {"en": "retried", "ru": "повторено", "uz": "qayta yuborildi"},
+    # ── issue action buttons ───────────────────────────────────────────────────
+    "btn.resolve": {"en": "✅ Resolve", "ru": "✅ Решено", "uz": "✅ Hal qilindi"},
+    "btn.ignore": {"en": "🙈 Ignore", "ru": "🙈 Игнорировать", "uz": "🙈 Eʼtiborsiz qoldirish"},
+    "btn.assign": {"en": "👤 Assign to me", "ru": "👤 Назначить на меня", "uz": "👤 Menga biriktirish"},
+    "btn.open": {"en": "🔗 Open in Sentry", "ru": "🔗 Открыть в Sentry", "uz": "🔗 Sentryda ochish"},
+    "issue.unknown": {
+        "en": "This chat has no alert for that issue.",
+        "ru": "В этом чате нет оповещения об этой проблеме.",
+        "uz": "Bu chatda ushbu muammo haqida ogohlantirish yoʻq.",
+    },
+    "issue.no_api": {
+        "en": "Sentry API access isn't configured for this organisation.",
+        "ru": "Доступ к API Sentry для этой организации не настроен.",
+        "uz": "Bu tashkilot uchun Sentry API ruxsati sozlanmagan.",
+    },
+    "issue.need_identity": {
+        "en": "Tell me your Sentry username or email first: /sentry_user you@example.com",
+        "ru": "Сначала укажите имя пользователя или email в Sentry: /sentry_user you@example.com",
+        "uz": "Avval Sentry foydalanuvchi nomi yoki emailingizni kiriting: /sentry_user you@example.com",
+    },
+    "issue.done_resolve": {"en": "✅ Resolved in Sentry", "ru": "✅ Отмечено решённым в Sentry", "uz": "✅ Sentryda hal qilindi"},
+    "issue.done_ignore": {"en": "🙈 Ignored in Sentry", "ru": "🙈 Проигнорировано в Sentry", "uz": "🙈 Sentryda eʼtiborsiz qoldirildi"},
+    "issue.done_assign": {"en": "👤 Assigned to you", "ru": "👤 Назначено на вас", "uz": "👤 Sizga biriktirildi"},
+    "issue.failed": {
+        "en": "Sentry refused: {error}",
+        "ru": "Sentry отклонил запрос: {error}",
+        "uz": "Sentry rad etdi: {error}",
+    },
+    "sentry_user.usage": {
+        "en": "Usage: <code>/sentry_user &lt;username|email&gt;</code> or <code>/sentry_user off</code>",
+        "ru": "Использование: <code>/sentry_user &lt;username|email&gt;</code> или <code>/sentry_user off</code>",
+        "uz": "Foydalanish: <code>/sentry_user &lt;username|email&gt;</code> yoki <code>/sentry_user off</code>",
+    },
+    "sentry_user.set": {
+        "en": "👤 “Assign to me” will assign issues to <code>{user}</code> in Sentry.",
+        "ru": "👤 «Назначить на меня» будет назначать проблемы на <code>{user}</code> в Sentry.",
+        "uz": "👤 “Menga biriktirish” muammolarni Sentryda <code>{user}</code> ga biriktiradi.",
+    },
+    "sentry_user.current": {
+        "en": "👤 Your Sentry user: <code>{user}</code>. Change with /sentry_user &lt;username|email&gt;.",
+        "ru": "👤 Ваш пользователь Sentry: <code>{user}</code>. Изменить: /sentry_user &lt;username|email&gt;.",
+        "uz": "👤 Sentry foydalanuvchingiz: <code>{user}</code>. Oʻzgartirish: /sentry_user &lt;username|email&gt;.",
+    },
+    "sentry_user.none": {
+        "en": "No Sentry user linked. Set one with /sentry_user &lt;username|email&gt;.",
+        "ru": "Пользователь Sentry не привязан. Укажите: /sentry_user &lt;username|email&gt;.",
+        "uz": "Sentry foydalanuvchisi bogʻlanmagan. Kiriting: /sentry_user &lt;username|email&gt;.",
+    },
+    "sentry_user.cleared": {
+        "en": "👤 Sentry user unlinked.",
+        "ru": "👤 Пользователь Sentry отвязан.",
+        "uz": "👤 Sentry foydalanuvchisi uzildi.",
+    },
     # ── test ───────────────────────────────────────────────────────────────────
     "test.usage": {
         "en": "Usage: <code>/test [{kinds}]</code>",
