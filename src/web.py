@@ -179,6 +179,10 @@ def build_app(
 
     app.router.add_get("/health", _health)
 
+    from .admin_web import register_admin  # imports this module's app keys
+
+    register_admin(app)
+
     # Sentry receiver
     app.router.add_post(settings.sentry_webhook_path, _sentry_webhook)
 

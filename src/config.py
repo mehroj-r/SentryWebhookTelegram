@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     default_chat_id: Optional[int] = None
     # NoDecode: accept both JSON ("[1,2]") and comma-separated ("1,2") forms.
     admin_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
+    # Read-only web admin page at /admin (disabled when empty). Send it as
+    # "Authorization: Bearer <token>", "X-Admin-Token: <token>" or ?token=<token>.
+    admin_token: str = ""
     # How long to remember Sentry Request-IDs for de-duplication.
     seen_request_ttl_days: int = 7
 

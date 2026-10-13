@@ -189,6 +189,21 @@ class EnvironmentRepository(BaseRepository):
             await session.execute(stmt)
             await session.commit()
 
+    async def list_all(self) -> dict[str, list[str]]:
+        """project → sorted environments."""
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(Environment.project, Environment.environment).order_by(
+                        Environment.project, Environment.environment
+                    )
+                )
+            ).all()
+        out: dict[str, list[str]] = {}
+        for project, env in rows:
+            out.setdefault(project, []).append(env)
+        return out
+
     async def list_for_project(self, project: str) -> list[str]:
         async with self._sessionmaker() as session:
             rows = (
@@ -307,6 +322,13 @@ class RouteRepository(BaseRepository):
             )
             await session.commit()
             return bool(result.rowcount)
+
+    async def list_all(self) -> list[dict]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(select(Route).order_by(Route.chat_id, Route.project, Route.environment))
+            ).scalars().all()
+            return [_route_dict(r) for r in rows]
 
     async def list_for_chat(self, chat_id: int) -> list[dict]:
         async with self._sessionmaker() as session:

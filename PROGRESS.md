@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (128 tests at last update).
+Run `.venv/bin/python -m pytest` before and after every change (137 tests at last update).
 
 ## Done
 
@@ -23,6 +23,7 @@ Run `.venv/bin/python -m pytest` before and after every change (128 tests at las
 | 12 | Audit log, `/routes verbose`, `/whoami` | `9965dde` | `audit_log` table (0008), `repos.audit`; `_audit()` helper in handlers logs only real changes; `is_admin()` in middlewares |
 | 13 | Per-chat admin roles | `6efab16` | `is_admin(bot, chat, user_id, sender_chat)` in middlewares; empty `ADMIN_IDS` → private open, group admins via `get_chat_member` (5 min cache, errors not cached), anonymous admins via `sender_chat`; harness `session.members` |
 | 14 | `/test` command | `08f6894` | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
+| 15 | Web admin page | _next commit_ | `src/admin_web.py`, `GET /admin`, `ADMIN_TOKEN` (empty → 404); bearer / `X-Admin-Token` / `?token=`; no-store, CSP, no-referrer; `routes.list_all()`, `environments.list_all()` |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
@@ -31,8 +32,7 @@ Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 Routing and management
 
 Operations and observability
-- [ ] **Web admin page** — aiohttp routes under `/admin` (token via `ADMIN_TOKEN` setting, query param or header): projects, environments, routes (all chats), queue depth, recent deliveries with status filter, installations. Server-rendered HTML, no JS deps.
-- [ ] **Dead letter handling** — mark `deliveries.status='failed'` rows retryable; `/retry_failed` (admin) re-sends last N failed for the chat using stored `text`; admin page button.
+- [ ] **Dead letter handling** — mark `deliveries.status='failed'` rows retryable; `/retry_failed` (admin) re-sends last N failed for the chat using stored `text`; admin page button (page is GET-only today — a POST form needs CSRF thought; token in a hidden field is fine since there are no cookies).
 - [ ] **Metrics endpoint** — `/metrics` Prometheus text format, hand-rolled counters in `src/metrics.py` (received, deduplicated, rejected_signature, delivered, failed, skipped, queue_size gauge).
 - [ ] **Postgres option** — replace `sqlite_insert` upserts in `repositories.py` with dialect-aware helper (`insert(...).on_conflict_do_*` for both via `sqlalchemy.dialects.postgresql`/`sqlite` chosen from `session.bind.dialect.name`); `make_url` already accepts full URLs; add `asyncpg` optional extra; make pragmas SQLite-only (already). Cannot be tested locally without Postgres — keep SQLite tests green.
 - [ ] **Docker / compose / systemd / GitHub Actions** — `Dockerfile` (python:3.12-slim, uv), `docker-compose.yml` (volume for `data.db`), `deploy/sentry-telegram.service`, `.github/workflows/ci.yml` running pytest; `.dockerignore`.
