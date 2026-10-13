@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 from typing import Optional
 
+from ..i18n import plural, t
 from .parser import ParsedEvent
 
 # Telegram hard limit for a text message.
@@ -77,8 +78,8 @@ def _issue_emoji(event: ParsedEvent) -> str:
     return _ACTION_EMOJI.get(event.action, "🔔")
 
 
-def _by_actor(event: ParsedEvent) -> str:
-    return f" by {_e(event.actor)}" if event.actor else ""
+def _by_actor(event: ParsedEvent, lang: str) -> str:
+    return t(lang, "fmt.by", actor=_e(event.actor)) if event.actor else ""
 
 
 def _clamp(text: str) -> str:
@@ -108,16 +109,16 @@ def _clamp(text: str) -> str:
 STATUS_ACTIONS = frozenset({"resolved", "unresolved", "archived", "ignored", "assigned"})
 
 
-def status_footer(event: ParsedEvent) -> Optional[str]:
+def status_footer(event: ParsedEvent, lang: str = "en") -> Optional[str]:
     """One-line status stamp for the original message, or None if not applicable."""
     if event.resource != "issue" or event.action not in STATUS_ACTIONS:
         return None
     emoji = _ACTION_EMOJI.get(event.action, "🔔")
     parts = [f"{emoji} <b>{_e(event.action.upper())}</b>"]
     if event.action == "assigned" and event.extra.get("assigned_to"):
-        parts.append(f"to {_e(_truncate(str(event.extra['assigned_to']), 60))}")
+        parts.append(t(lang, "fmt.footer_to", who=_e(_truncate(str(event.extra["assigned_to"]), 60))))
     if event.actor:
-        parts.append(f"by {_e(event.actor)}")
+        parts.append(t(lang, "fmt.footer_by", actor=_e(event.actor)))
     return " ".join(parts)
 
 
@@ -127,20 +128,20 @@ def append_footer(original_html: str, footer: str) -> Optional[str]:
     return combined if len(combined) <= TELEGRAM_MAX_LEN else None
 
 
-def format_burst_summary(sample: ParsedEvent, count: int, window_s: float) -> str:
+def format_burst_summary(sample: ParsedEvent, count: int, window_s: float, lang: str = "en") -> str:
     """One line for N suppressed repeats of the same issue."""
     minutes = max(1, round(window_s / 60))
     title_part = _link(sample.title, sample.web_url, limit=150)
     where = ""
     if sample.environment:
         where = f" (<code>{_e(sample.environment)}</code>)"
-    return (
-        f"🔁 <b>+{count} more</b> event{'s' if count != 1 else ''} for {title_part}{where} "
-        f"in the last {minutes} min"
+    return t(
+        lang, "fmt.burst", count=count, events=plural(lang, "w.events", count),
+        title=title_part, where=where, minutes=minutes,
     )
 
 
-def format_digest(items: list[dict], max_groups: int = 25) -> str:
+def format_digest(items: list[dict], max_groups: int = 25, lang: str = "en") -> str:
     """
     One message summarising parked events, grouped by issue (or title when
     there is no issue id), most frequent first.
@@ -156,8 +157,10 @@ def format_digest(items: list[dict], max_groups: int = 25) -> str:
     ordered = sorted(groups.values(), key=lambda g: -g["count"])
 
     total = len(items)
-    header = f"📰 <b>Digest</b>: {total} event{'s' if total != 1 else ''} across {len(groups)} issue{'s' if len(groups) != 1 else ''}"
-    lines = [header]
+    lines = [t(
+        lang, "fmt.digest", total=total, events=plural(lang, "w.events", total),
+        groups=len(groups), issues=plural(lang, "w.issues", len(groups)),
+    )]
     for g in ordered[:max_groups]:
         it = g["item"]
         level_emoji = _LEVEL_EMOJI.get(str(it.get("level") or ""), "•")
@@ -167,33 +170,33 @@ def format_digest(items: list[dict], max_groups: int = 25) -> str:
         actions = ",".join(sorted(a for a in g["actions"] if a))
         suffix = f" <i>{_e(actions)}</i>" if actions and actions != "created" else ""
         lines.append(
-            f"{level_emoji} ×{g['count']} <code>{where}</code> {_link(it.get('title') or '(no title)', it.get('web_url'), limit=120)}{suffix}"
+            f"{level_emoji} ×{g['count']} <code>{where}</code> {_link(it.get('title') or t(lang, 'fmt.no_title'), it.get('web_url'), limit=120)}{suffix}"
         )
     if len(ordered) > max_groups:
-        lines.append(f"… and {len(ordered) - max_groups} more issues")
+        lines.append(t(lang, "fmt.digest_more", n=len(ordered) - max_groups))
     return _clamp("\n".join(lines))
 
 
 # ── public API ─────────────────────────────────────────────────────────────────
 
 
-def format_event(event: ParsedEvent) -> str:
-    """Return an HTML-formatted Telegram message for a ParsedEvent."""
+def format_event(event: ParsedEvent, lang: str = "en") -> str:
+    """Return an HTML-formatted Telegram message for a ParsedEvent, labels in `lang`."""
     fn = _FORMATTERS.get(event.resource, _format_generic)
-    text = fn(event)
+    text = fn(event, lang)
     if event.org and event.resource != "installation":
         text = f"<code>[{_e(event.org)}]</code> {text}"
     return _clamp(text)
 
 
-def _context_lines(ex: dict) -> list[str]:
+def _context_lines(ex: dict, lang: str) -> list[str]:
     """Compact context for event bodies: release, where, who, platform."""
     lines: list[str] = []
     if ex.get("release"):
         rel = _truncate(str(ex["release"]), 60)
         if ex.get("dist"):
             rel += f" ({_truncate(str(ex['dist']), 20)})"
-        lines.append(f"📦 Release: <code>{_e(rel)}</code>")
+        lines.append(t(lang, "fmt.release_line", release=_e(rel)))
     frame = ex.get("top_frame")
     if frame and (frame.get("filename") or frame.get("function")):
         loc = _truncate(str(frame.get("filename") or "?"), 80)
@@ -209,12 +212,12 @@ def _context_lines(ex: dict) -> list[str]:
         method = f"{_e(ex['request_method'])} " if ex.get("request_method") else ""
         lines.append(f"🌐 {method}{_link(str(ex['request_url']), str(ex['request_url']), limit=100)}")
     if ex.get("user"):
-        lines.append(f"👤 User: {_e(_truncate(str(ex['user']), 60))}")
+        lines.append(t(lang, "fmt.user", user=_e(_truncate(str(ex["user"]), 60))))
     platform_bits = [str(ex[k]) for k in ("browser", "os", "runtime") if ex.get(k)]
     if platform_bits:
         lines.append(f"🖥️ {_e(' · '.join(platform_bits))}")
     elif ex.get("platform"):
-        lines.append(f"🖥️ Platform: {_e(ex['platform'])}")
+        lines.append(t(lang, "fmt.platform", platform=_e(ex["platform"])))
     return lines
 
 
@@ -236,20 +239,27 @@ def _details_block(ex: dict) -> Optional[str]:
 # ── per-resource formatters ────────────────────────────────────────────────────
 
 
-def _format_issue(event: ParsedEvent) -> str:
+def _level_line(level: object, lang: str) -> str:
+    emoji = _LEVEL_EMOJI.get(str(level), "")
+    return f"{emoji} {t(lang, 'fmt.level', level=_e(level))}".strip()
+
+
+def _format_issue(event: ParsedEvent, lang: str) -> str:
     ex = event.extra
     emoji = _issue_emoji(event)
     action_label = _e(event.action.upper() or "EVENT")
     title_part = _link(event.title, event.web_url)
 
-    lines: list[str] = [f"{emoji} <b>Issue {action_label}</b>{_by_actor(event)}: {title_part}"]
+    lines: list[str] = [
+        t(lang, "fmt.issue", emoji=emoji, action=action_label, by=_by_actor(event, lang), title=title_part)
+    ]
 
     if ex.get("short_id"):
         lines.append(f"🆔 <code>{_e(ex['short_id'])}</code>")
     if ex.get("project_name"):
-        lines.append(f"📁 Project: {_e(ex['project_name'])}")
+        lines.append(t(lang, "fmt.project", project=_e(ex["project_name"])))
     if ex.get("is_regression"):
-        lines.append("↩️ <b>Regression</b>")
+        lines.append(t(lang, "fmt.regression"))
     if ex.get("exc_value") and str(ex["exc_value"]) not in event.title:
         lines.append(f"<i>{_e(_truncate(str(ex['exc_value']), 200))}</i>")
     if ex.get("filename") or ex.get("function"):
@@ -259,68 +269,66 @@ def _format_issue(event: ParsedEvent) -> str:
     elif ex.get("culprit"):
         lines.append(f"📍 <i>{_e(_truncate(str(ex['culprit']), 120))}</i>")
     if ex.get("level"):
-        level_emoji = _LEVEL_EMOJI.get(str(ex["level"]), "")
-        lines.append(f"{level_emoji} Level: <b>{_e(ex['level'])}</b>".strip())
+        lines.append(_level_line(ex["level"], lang))
     if ex.get("status"):
         status_str = _e(ex["status"])
         if ex.get("substatus"):
             status_str += f" ({_e(ex['substatus'])})"
-        lines.append(f"Status: {status_str}")
+        lines.append(t(lang, "fmt.status", status=status_str))
     if ex.get("assigned_to"):
-        lines.append(f"👤 Assigned: {_e(_truncate(str(ex['assigned_to']), 100))}")
+        lines.append(t(lang, "fmt.assigned", who=_e(_truncate(str(ex["assigned_to"]), 100))))
     if ex.get("count") is not None or ex.get("user_count") is not None:
         count = ex.get("count")
         users = ex.get("user_count")
-        lines.append(
-            f"📊 Events: {_e(count if count is not None else '?')} | "
-            f"Users: {_e(users if users is not None else '?')}"
-        )
+        lines.append(t(
+            lang, "fmt.counts",
+            count=_e(count if count is not None else "?"), users=_e(users if users is not None else "?"),
+        ))
 
     return "\n".join(lines)
 
 
-def _format_event_alert(event: ParsedEvent) -> str:
+def _format_event_alert(event: ParsedEvent, lang: str) -> str:
     emoji = _ACTION_EMOJI.get(event.action, "⚡")
     title_part = _link(event.title, event.web_url)
-    lines: list[str] = [f"{emoji} <b>Event Alert</b>: {title_part}"]
+    lines: list[str] = [t(lang, "fmt.event_alert", emoji=emoji, title=title_part)]
 
     if rule := event.extra.get("triggered_rule"):
-        lines.append(f"📋 Rule: <i>{_e(_truncate(str(rule), 120))}</i>")
+        lines.append(t(lang, "fmt.rule", rule=_e(_truncate(str(rule), 120))))
     if msg := event.extra.get("message"):
         if msg != event.title:
             lines.append(f"<i>{_e(_truncate(str(msg), 200))}</i>")
     if env := event.environment:
-        lines.append(f"🌍 Env: <code>{_e(env)}</code>")
+        lines.append(t(lang, "fmt.env", env=_e(env)))
     if level := event.extra.get("level"):
-        level_emoji = _LEVEL_EMOJI.get(str(level), "")
-        lines.append(f"{level_emoji} Level: <b>{_e(level)}</b>".strip())
-    lines.extend(_context_lines(event.extra))
+        lines.append(_level_line(level, lang))
+    lines.extend(_context_lines(event.extra, lang))
     if details := _details_block(event.extra):
         lines.append(details)
 
     return "\n".join(lines)
 
 
-def _format_metric_alert(event: ParsedEvent) -> str:
+def _format_metric_alert(event: ParsedEvent, lang: str) -> str:
     emoji = _ACTION_EMOJI.get(event.action, "📊")
     title_part = _link(event.title, event.web_url)
-    lines: list[str] = [f"{emoji} <b>Metric Alert</b>: {title_part}"]
+    lines: list[str] = [t(lang, "fmt.metric_alert", emoji=emoji, title=title_part)]
 
     if event.project_slug:
-        lines.append(f"📁 Project: <code>{_e(event.project_slug)}</code>")
+        lines.append(t(lang, "fmt.project", project=f"<code>{_e(event.project_slug)}</code>"))
     if env := event.environment:
-        lines.append(f"🌍 Env: <code>{_e(env)}</code>")
+        lines.append(t(lang, "fmt.env", env=_e(env)))
     if desc := event.extra.get("description_text"):
         lines.append(f"<code>{_e(_truncate(str(desc), 400))}</code>")
 
     return "\n".join(lines)
 
 
-def _format_error(event: ParsedEvent) -> str:
+def _format_error(event: ParsedEvent, lang: str) -> str:
     level = event.extra.get("level") or "error"
     emoji = _LEVEL_EMOJI.get(str(level), "🔴")
     title_part = _link(event.title, event.web_url)
-    lines: list[str] = [f"{emoji} <b>Error</b>: {title_part}"]
+    lines: list[str] = [t(lang, "fmt.error", emoji=emoji, title=title_part)]
 
     if msg := event.extra.get("message"):
         if msg != event.title:
@@ -329,24 +337,26 @@ def _format_error(event: ParsedEvent) -> str:
     if frame.get("exc_value") and frame.get("exc_value") != event.title:
         lines.append(f"<i>{_e(_truncate(str(frame['exc_value']), 200))}</i>")
     if env := event.environment:
-        lines.append(f"🌍 Env: <code>{_e(env)}</code>")
-    lines.extend(_context_lines(event.extra))
+        lines.append(t(lang, "fmt.env", env=_e(env)))
+    lines.extend(_context_lines(event.extra, lang))
     if eid := event.extra.get("event_id"):
-        lines.append(f"🆔 ID: <code>{_e(eid)}</code>")
+        lines.append(t(lang, "fmt.id", id=_e(eid)))
     if details := _details_block(event.extra):
         lines.append(details)
 
     return "\n".join(lines)
 
 
-def _format_comment(event: ParsedEvent) -> str:
+def _format_comment(event: ParsedEvent, lang: str) -> str:
     emoji = _ACTION_EMOJI.get(event.action, "💬")
-    lines: list[str] = [f"{emoji} <b>Comment {_e(event.action.upper())}</b>{_by_actor(event)}"]
+    lines: list[str] = [
+        t(lang, "fmt.comment", emoji=emoji, action=_e(event.action.upper()), by=_by_actor(event, lang))
+    ]
 
     if iid := event.extra.get("issue_id"):
-        lines.append(f"🔗 Issue: #{_e(iid)}")
+        lines.append(t(lang, "fmt.issue_ref", id=_e(iid)))
     if project := event.project_slug:
-        lines.append(f"📁 Project: <code>{_e(project)}</code>")
+        lines.append(t(lang, "fmt.project", project=f"<code>{_e(project)}</code>"))
     if text := event.extra.get("comment"):
         snippet = _truncate(str(text), 300)
         lines.append(f"<blockquote>{_e(snippet)}</blockquote>")
@@ -354,43 +364,43 @@ def _format_comment(event: ParsedEvent) -> str:
     return "\n".join(lines)
 
 
-def _format_installation(event: ParsedEvent) -> str:
+def _format_installation(event: ParsedEvent, lang: str) -> str:
     emoji = "🔌" if event.action == "created" else "🔌❌"
-    lines: list[str] = [f"{emoji} <b>Integration {_e(event.action.upper())}</b>"]
+    lines: list[str] = [t(lang, "fmt.integration", emoji=emoji, action=_e(event.action.upper()))]
 
     if app := event.extra.get("app_slug"):
-        lines.append(f"App: <code>{_e(app)}</code>")
+        lines.append(t(lang, "fmt.app", app=_e(app)))
     if org := event.extra.get("org_slug"):
-        lines.append(f"Org: <code>{_e(org)}</code>")
+        lines.append(t(lang, "fmt.org", org=_e(org)))
     if status := event.extra.get("status"):
-        lines.append(f"Status: {_e(status)}")
+        lines.append(t(lang, "fmt.status", status=_e(status)))
 
     return "\n".join(lines)
 
 
-def _format_release(event: ParsedEvent) -> str:
+def _format_release(event: ParsedEvent, lang: str) -> str:
     ex = event.extra
     emoji = "🚀" if event.action in ("deployed", "created", "finalized") else "📦"
-    version = ex.get("version") or "(unknown version)"
+    version = ex.get("version") or t(lang, "fmt.unknown_version")
     head = _link(str(version), event.web_url, limit=80)
-    lines: list[str] = [f"{emoji} <b>Release {_e(event.action.upper())}</b>: {head}"]
+    lines: list[str] = [t(lang, "fmt.release", emoji=emoji, action=_e(event.action.upper()), head=head)]
     if ex.get("projects"):
         lines.append("📁 " + ", ".join(f"<code>{_e(p)}</code>" for p in ex["projects"][:5]))
     if event.environment:
         env = _e(event.environment)
         if ex.get("deploy_name"):
             env += f" ({_e(ex['deploy_name'])})"
-        lines.append(f"🌍 Env: <code>{env}</code>")
+        lines.append(t(lang, "fmt.env", env=env))
     if ex.get("commit_count"):
-        lines.append(f"🔀 Commits: {_e(ex['commit_count'])}")
+        lines.append(t(lang, "fmt.commits", n=_e(ex["commit_count"])))
     if ex.get("authors"):
         lines.append("👥 " + _e(", ".join(ex["authors"])))
     if event.actor:
-        lines.append(f"by {_e(event.actor)}")
+        lines.append(t(lang, "fmt.by_line", actor=_e(event.actor)))
     return "\n".join(lines)
 
 
-def _format_generic(event: ParsedEvent) -> str:
+def _format_generic(event: ParsedEvent, lang: str) -> str:
     emoji = _ACTION_EMOJI.get(event.action, "🔔")
     lines: list[str] = [
         f"{emoji} <b>{_e(event.resource.upper())}</b>: {_e(event.action)}",

@@ -571,7 +571,7 @@ async def cmd_test(message: Message, repos: Repositories, lang: str) -> None:
     org, project, environment = _sample_target(routes)
     event = sample_event(kind, project, environment)
     event.org = org
-    await message.answer(format_event(event))
+    await message.answer(format_event(event, lang))
 
     if not routes:
         verdict = t(lang, "test.no_routes")

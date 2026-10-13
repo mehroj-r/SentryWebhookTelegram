@@ -22,6 +22,7 @@ from .chat_settings import quiet_until
 from .config import settings
 from .db import Repositories
 from .filters import event_level, skip_reason
+from .i18n import DEFAULT_LANGUAGE, normalize_language
 from .sentry.formatters import (
     append_footer,
     format_burst_summary,
@@ -228,15 +229,25 @@ async def _record(
         log.exception("Could not record delivery for chat_id=%s", target.chat_id)
 
 
+async def _chat_lang(repos: Repositories, chat_id: int) -> str:
+    """The chat's /lang setting (default English) for formatting events."""
+    try:
+        prefs = await repos.chat_settings.get(chat_id)
+    except Exception:
+        log.exception("Chat settings lookup failed for chat_id=%s", chat_id)
+        return DEFAULT_LANGUAGE
+    return normalize_language((prefs or {}).get("language")) or DEFAULT_LANGUAGE
+
+
 async def _stamp_original(
-    bot: Bot, repos: Repositories, event: ParsedEvent, chat_id: int, prior: dict
+    bot: Bot, repos: Repositories, event: ParsedEvent, chat_id: int, prior: dict, lang: str = DEFAULT_LANGUAGE
 ) -> None:
     """
     Append a status footer (e.g. "✅ RESOLVED by Alice") to the message that
     first announced the issue, so the chat shows the issue's current state at
     a glance. Best effort: edits of old/deleted messages simply fail quietly.
     """
-    footer = status_footer(event)
+    footer = status_footer(event, lang)
     if not footer or not prior.get("text") or not prior.get("tg_message_id"):
         return
     new_text = append_footer(prior["text"], footer)
@@ -307,9 +318,13 @@ async def send_event(
         )
         return
 
-    text = format_event(event)
+    texts: dict[str, str] = {}  # one rendering per language
     for target in targets.values():
         chat_id = target.chat_id
+        lang = await _chat_lang(repos, chat_id)
+        if lang not in texts:
+            texts[lang] = format_event(event, lang)
+        text = texts[lang]
         if target.skip is not None:
             log.info("Skipping chat_id=%s for %s.%s: %s", chat_id, event.resource, event.action, target.skip)
             await _record(repos, event, target, SendResult(error=target.skip), text, status="skipped")
@@ -346,7 +361,7 @@ async def send_event(
         )
         await _record(repos, event, target, result, text)
         if prior and result.ok:
-            await _stamp_original(bot, repos, event, chat_id, prior)
+            await _stamp_original(bot, repos, event, chat_id, prior, lang)
 
 
 async def retry_failed(
@@ -389,8 +404,9 @@ async def flush_digests(bot: Bot, repos: Repositories, force: bool = False) -> i
         by_thread: dict[Optional[int], list[dict]] = {}
         for it in items:
             by_thread.setdefault(it.get("thread_id"), []).append(it)
+        lang = await _chat_lang(repos, chat_id)
         for thread_id, group in by_thread.items():
-            text = format_digest(group)
+            text = format_digest(group, lang=lang)
             target = Target(chat_id=chat_id, thread_id=thread_id)
             result = await _send_to_chat(bot, chat_id, text, thread_id=thread_id)
             sample = ParsedEvent(
@@ -404,7 +420,9 @@ async def flush_digests(bot: Bot, repos: Repositories, force: bool = False) -> i
 
 async def send_burst_summary(bot: Bot, repos: Repositories, summary: Summary) -> None:
     """Post the '+N more events' line, threaded under the issue's last message."""
-    text = format_burst_summary(summary.sample, summary.count, summary.window_s)
+    text = format_burst_summary(
+        summary.sample, summary.count, summary.window_s, await _chat_lang(repos, summary.chat_id)
+    )
     prior = None
     try:
         prior = await repos.deliveries.last_for_issue(summary.chat_id, summary.issue_id)

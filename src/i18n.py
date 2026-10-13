@@ -477,7 +477,105 @@ CATALOG: dict[str, dict[str, str]] = {
         "ru": "Маршрут уже был удалён.",
         "uz": "Yoʻnalish allaqachon oʻchirilgan.",
     },
+    # ── event formatting (src/sentry/formatters.py) ────────────────────────────
+    # Sentry's action tokens (CREATED, RESOLVED, …) are kept as-is.
+    # Plural entries ("w." prefix) hold "|"-separated forms, see `plural()`.
+    "fmt.by": {"en": " by {actor}", "ru": " — {actor}", "uz": " — {actor}"},
+    "fmt.issue": {
+        "en": "{emoji} <b>Issue {action}</b>{by}: {title}",
+        "ru": "{emoji} <b>Проблема {action}</b>{by}: {title}",
+        "uz": "{emoji} <b>Muammo {action}</b>{by}: {title}",
+    },
+    "fmt.project": {"en": "📁 Project: {project}", "ru": "📁 Проект: {project}", "uz": "📁 Loyiha: {project}"},
+    "fmt.regression": {"en": "↩️ <b>Regression</b>", "ru": "↩️ <b>Регрессия</b>", "uz": "↩️ <b>Regressiya</b>"},
+    "fmt.level": {"en": "Level: <b>{level}</b>", "ru": "Уровень: <b>{level}</b>", "uz": "Daraja: <b>{level}</b>"},
+    "fmt.status": {"en": "Status: {status}", "ru": "Статус: {status}", "uz": "Holat: {status}"},
+    "fmt.assigned": {"en": "👤 Assigned: {who}", "ru": "👤 Назначено: {who}", "uz": "👤 Biriktirilgan: {who}"},
+    "fmt.counts": {
+        "en": "📊 Events: {count} | Users: {users}",
+        "ru": "📊 События: {count} | Пользователи: {users}",
+        "uz": "📊 Hodisalar: {count} | Foydalanuvchilar: {users}",
+    },
+    "fmt.event_alert": {
+        "en": "{emoji} <b>Event Alert</b>: {title}",
+        "ru": "{emoji} <b>Оповещение о событии</b>: {title}",
+        "uz": "{emoji} <b>Hodisa ogohlantirishi</b>: {title}",
+    },
+    "fmt.rule": {"en": "📋 Rule: <i>{rule}</i>", "ru": "📋 Правило: <i>{rule}</i>", "uz": "📋 Qoida: <i>{rule}</i>"},
+    "fmt.env": {"en": "🌍 Env: <code>{env}</code>", "ru": "🌍 Окружение: <code>{env}</code>", "uz": "🌍 Muhit: <code>{env}</code>"},
+    "fmt.release_line": {
+        "en": "📦 Release: <code>{release}</code>",
+        "ru": "📦 Релиз: <code>{release}</code>",
+        "uz": "📦 Reliz: <code>{release}</code>",
+    },
+    "fmt.user": {"en": "👤 User: {user}", "ru": "👤 Пользователь: {user}", "uz": "👤 Foydalanuvchi: {user}"},
+    "fmt.platform": {"en": "🖥️ Platform: {platform}", "ru": "🖥️ Платформа: {platform}", "uz": "🖥️ Platforma: {platform}"},
+    "fmt.metric_alert": {
+        "en": "{emoji} <b>Metric Alert</b>: {title}",
+        "ru": "{emoji} <b>Оповещение по метрике</b>: {title}",
+        "uz": "{emoji} <b>Metrika ogohlantirishi</b>: {title}",
+    },
+    "fmt.error": {"en": "{emoji} <b>Error</b>: {title}", "ru": "{emoji} <b>Ошибка</b>: {title}", "uz": "{emoji} <b>Xato</b>: {title}"},
+    "fmt.id": {"en": "🆔 ID: <code>{id}</code>", "ru": "🆔 ID: <code>{id}</code>", "uz": "🆔 ID: <code>{id}</code>"},
+    "fmt.comment": {
+        "en": "{emoji} <b>Comment {action}</b>{by}",
+        "ru": "{emoji} <b>Комментарий {action}</b>{by}",
+        "uz": "{emoji} <b>Izoh {action}</b>{by}",
+    },
+    "fmt.issue_ref": {"en": "🔗 Issue: #{id}", "ru": "🔗 Проблема: #{id}", "uz": "🔗 Muammo: #{id}"},
+    "fmt.integration": {
+        "en": "{emoji} <b>Integration {action}</b>",
+        "ru": "{emoji} <b>Интеграция {action}</b>",
+        "uz": "{emoji} <b>Integratsiya {action}</b>",
+    },
+    "fmt.app": {"en": "App: <code>{app}</code>", "ru": "Приложение: <code>{app}</code>", "uz": "Ilova: <code>{app}</code>"},
+    "fmt.org": {"en": "Org: <code>{org}</code>", "ru": "Организация: <code>{org}</code>", "uz": "Tashkilot: <code>{org}</code>"},
+    "fmt.release": {
+        "en": "{emoji} <b>Release {action}</b>: {head}",
+        "ru": "{emoji} <b>Релиз {action}</b>: {head}",
+        "uz": "{emoji} <b>Reliz {action}</b>: {head}",
+    },
+    "fmt.unknown_version": {"en": "(unknown version)", "ru": "(версия неизвестна)", "uz": "(versiya nomaʼlum)"},
+    "fmt.commits": {"en": "🔀 Commits: {n}", "ru": "🔀 Коммиты: {n}", "uz": "🔀 Kommitlar: {n}"},
+    "fmt.by_line": {"en": "by {actor}", "ru": "автор: {actor}", "uz": "muallif: {actor}"},
+    "fmt.footer_to": {"en": "to {who}", "ru": "→ {who}", "uz": "→ {who}"},
+    "fmt.footer_by": {"en": "by {actor}", "ru": "({actor})", "uz": "({actor})"},
+    "fmt.no_title": {"en": "(no title)", "ru": "(без названия)", "uz": "(nomsiz)"},
+    "fmt.burst": {
+        "en": "🔁 <b>+{count} more</b> {events} for {title}{where} in the last {minutes} min",
+        "ru": "🔁 <b>Ещё +{count}</b> {events} по {title}{where} за последние {minutes} мин",
+        "uz": "🔁 <b>Yana +{count}</b> {events}: {title}{where}, soʻnggi {minutes} daqiqada",
+    },
+    "fmt.digest": {
+        "en": "📰 <b>Digest</b>: {total} {events} across {groups} {issues}",
+        "ru": "📰 <b>Сводка</b>: {total} {events} в {groups} {issues}",
+        "uz": "📰 <b>Jamlanma</b>: {total} {events}, {groups} {issues}",
+    },
+    "fmt.digest_more": {
+        "en": "… and {n} more issues",
+        "ru": "… и ещё проблем: {n}",
+        "uz": "… va yana {n} ta muammo",
+    },
+    "w.events": {"en": "event|events", "ru": "событие|события|событий", "uz": "ta hodisa"},
+    "w.issues": {"en": "issue|issues", "ru": "проблеме|проблемах|проблемах", "uz": "ta muammo"},
 }
+
+
+def plural(lang: Optional[str], key: str, n: int) -> str:
+    """
+    Pick the plural form of a "w." catalog word for count `n`:
+    English one|other, Russian one|few|many, Uzbek has a single form.
+    """
+    forms = t(lang, key).split("|")
+    if len(forms) == 1:
+        return forms[0]
+    if len(forms) == 2:
+        return forms[0] if n == 1 else forms[1]
+    if n % 10 == 1 and n % 100 != 11:
+        return forms[0]
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return forms[1]
+    return forms[2]
 
 
 def normalize_language(code: Optional[str]) -> Optional[str]:
