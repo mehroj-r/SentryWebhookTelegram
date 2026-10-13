@@ -44,9 +44,7 @@ Migrations so far: `0001`…`0009`. Next revision id: `0010`.
 
 ## Remaining
 
-All roadmap items are done. Open follow-up:
-
-- [ ] **Docker image build** has only been checked by CI config, not built locally (no Docker daemon access in the dev session).
+All roadmap items are done. CI (`.github/workflows/ci.yml`) runs the suite on 3.12 and 3.14, against PostgreSQL, and builds the Docker image — all green on PR #1.
 
 ## Conventions
 
