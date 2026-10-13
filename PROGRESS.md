@@ -19,7 +19,7 @@ Run `.venv/bin/python -m pytest` before and after every change (105 tests at las
 | 8 | Multi-org | `00ab523` | `SENTRY_CLIENT_SECRETS`, `installations` table, `org/slug` routes, `[org]` prefix |
 | 9 | Wildcard routes | `f3b41b9` | fnmatch on `routes.project` containing `*`; exact beats pattern |
 | 10 | Per-chat settings | `82a2579` | `chat_settings` table, `/settings` `/tz` `/quiet`; topic routing via `thread_id` |
-| 11 | Export / import routes | _next commit_ | `src/route_io.py` (format v1, all-or-nothing validation), `RouteRepository.import_routes` merges; `/export` public, `/import` admin; thread ids dropped when importing into another chat |
+| 11 | Export / import routes | `b6d9ff8` | `src/route_io.py` (format v1, all-or-nothing validation), `RouteRepository.import_routes` merges; `/export` public, `/import` admin; thread ids dropped when importing into another chat |
 
 Migrations so far: `0001`…`0007`. Next revision id: `0008`.
 
