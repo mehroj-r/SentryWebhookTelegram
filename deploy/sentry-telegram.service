@@ -1,0 +1,43 @@
+# /etc/systemd/system/sentry-telegram.service
+#
+#   sudo useradd --system --home /opt/sentry-telegram sentry-telegram
+#   sudo git clone <repo> /opt/sentry-telegram && cd /opt/sentry-telegram
+#   sudo uv venv && sudo uv pip install -r pyproject.toml   # add --extra postgres for PostgreSQL
+#   sudo cp .env.example .env && sudo $EDITOR .env           # DB_PATH=/var/lib/sentry-telegram/data.db
+#   sudo chown -R sentry-telegram: /opt/sentry-telegram
+#   sudo systemctl enable --now sentry-telegram
+#
+# Put a TLS-terminating reverse proxy (nginx, Caddy) in front of PORT;
+# Telegram only delivers webhooks over HTTPS.
+
+[Unit]
+Description=Sentry → Telegram notification bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sentry-telegram
+WorkingDirectory=/opt/sentry-telegram
+EnvironmentFile=/opt/sentry-telegram/.env
+ExecStart=/opt/sentry-telegram/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+# SIGTERM triggers a graceful shutdown that drains the delivery queue.
+TimeoutStopSec=30
+
+StateDirectory=sentry-telegram
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/sentry-telegram
+
+[Install]
+WantedBy=multi-user.target

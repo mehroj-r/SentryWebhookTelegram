@@ -95,13 +95,12 @@ def _member(method: GetChatMember, status: str):  # noqa: ANN202
     if status == "creator":
         return ChatMemberOwner(user=user, is_anonymous=False)
     if status == "administrator":
-        flags = dict.fromkeys(
-            ("can_be_edited", "is_anonymous", "can_manage_chat", "can_delete_messages",
-             "can_manage_video_chats", "can_restrict_members", "can_promote_members",
-             "can_change_info", "can_invite_users", "can_post_stories", "can_edit_stories",
-             "can_delete_stories"),
-            False,
-        )
+        # Every required permission flag (the set grows with Telegram API versions).
+        flags = {
+            name: False
+            for name, f in ChatMemberAdministrator.model_fields.items()
+            if f.is_required() and name not in ("status", "user")
+        }
         return ChatMemberAdministrator(user=user, **flags)
     return ChatMemberMember(user=user)
 

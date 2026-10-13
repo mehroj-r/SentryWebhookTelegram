@@ -28,6 +28,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 16 | Dead-letter retry | `aaa5069` | failed rows now keep `text`; `delivery.retry_failed()` marks originals `retried` and logs a fresh row; `/retry_failed [N]` (admin); `POST /admin/retry` (token in form/header, not query) |
 | 17 | Prometheus `/metrics` | `81c6964` | `src/metrics.py` (hand-rolled labelled counters, `metrics.reset()` for tests); webhooks received/rejected/deduplicated, deliveries by status (counted in `_record` + retries), queue gauge; optional `METRICS_TOKEN` |
 | 18 | PostgreSQL support | `a8cdb79` | `_insert(session, Model)` picks the dialect's `insert` for ON CONFLICT; `make_url` maps `postgres(ql)://` → asyncpg; `postgres` extra; `TEST_DATABASE_URL` runs the whole suite (and a drift check) on PG — all green |
+| 19 | Docker / compose / systemd / CI | _next commit_ | `Dockerfile` (3.12-slim + uv, non-root, `/data` volume, healthcheck), `docker-compose.yml` (optional `postgres` profile), `deploy/sentry-telegram.service` (hardened), `.github/workflows/ci.yml` (3.12 + 3.14, Postgres service job, docker build). Image build not verified locally (no Docker daemon access); deps + suite verified on a 3.12 venv |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
@@ -36,7 +37,6 @@ Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 Routing and management
 
 Operations and observability
-- [ ] **Docker / compose / systemd / GitHub Actions** — `Dockerfile` (python:3.12-slim, uv), `docker-compose.yml` (volume for `data.db`), `deploy/sentry-telegram.service`, `.github/workflows/ci.yml` running pytest; `.dockerignore`.
 - [ ] **Polling fallback** — `USE_WEBHOOK=false`: skip `set_webhook` (call `delete_webhook`), run `dp.start_polling` as a background task; still serve the Sentry HTTP endpoint. In `main.py`.
 - [ ] **Startup self-check** — after start: `bot.get_webhook_info()` matches URL; if `DEFAULT_CHAT_ID` set, `get_chat` it and warn; log summary of routes/projects counts.
 
@@ -50,6 +50,7 @@ Polish
 
 ## Conventions
 
+- Fresh installs pull newer aiogram than `.venv` (3.29); test fixtures must not hard-code Telegram type field lists (see `_member()` in the harness).
 - Tests: `tests/bot_harness.py` drives aiogram handlers with a fake session (`Harness(repos)`, `.command(..., reply_to=, document=)`, `.callback()`, `.upload()` for downloadable files); `tests/test_web.py` has the `client` fixture for the Sentry HTTP endpoint; `repos` fixture gives an in-memory DB.
 - Every schema change = new file in `migrations/versions/` with a defensive `upgrade()` (check `has_table` / column names) and a model update; `tests/test_migrations.py::test_models_match_latest_migration` fails on drift.
 - Commands that take user text must escape it (`html.escape`) and validate against `SLUG_RE` (defined in `src/route_io.py`, imported as `_SLUG_RE` in handlers).
