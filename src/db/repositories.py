@@ -787,6 +787,13 @@ class AuditRepository(BaseRepository):
             session.add(AuditEntry(ts=_utcnow(), chat_id=chat_id, user_id=user_id, action=action, details=details))
             await session.commit()
 
+    async def purge_older_than(self, max_age: timedelta) -> int:
+        cutoff = _utcnow() - max_age
+        async with self._sessionmaker() as session:
+            result = await session.execute(delete(AuditEntry).where(AuditEntry.ts < cutoff))
+            await session.commit()
+            return result.rowcount or 0
+
     async def recent_for_chat(self, chat_id: int, limit: int = 10) -> list[dict]:
         async with self._sessionmaker() as session:
             rows = (

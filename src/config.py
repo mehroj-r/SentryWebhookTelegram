@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # Reject webhooks whose Sentry-Hook-Timestamp is further than this from now
     # (seconds, either direction). 0 disables. Requests without the header pass.
     replay_window_seconds: int = 300
+    # Delivery log (/last, /stats, threading, retries) and audit log rows older
+    # than this are deleted hourly. 0 keeps them forever.
+    log_retention_days: int = 30
     # How long to remember Sentry Request-IDs for de-duplication.
     seen_request_ttl_days: int = 7
 

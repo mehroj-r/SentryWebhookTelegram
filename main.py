@@ -28,16 +28,29 @@ _PURGE_INTERVAL_S = 3600
 _ALLOWED_UPDATES = ["message", "callback_query"]
 
 
-async def _purge_seen_requests(repos: Repositories) -> None:
-    """Periodically drop old Request-ID dedup rows so the table doesn't grow forever."""
-    max_age = timedelta(days=settings.seen_request_ttl_days)
-    while True:
+async def purge_once(repos: Repositories) -> dict[str, int]:
+    """Delete expired dedup, delivery-log and audit-log rows; returns rows removed per table."""
+    jobs = [("seen_requests", repos.seen, settings.seen_request_ttl_days)]
+    if settings.log_retention_days > 0:
+        jobs += [
+            ("deliveries", repos.deliveries, settings.log_retention_days),
+            ("audit_log", repos.audit, settings.log_retention_days),
+        ]
+    removed: dict[str, int] = {}
+    for table, repo, days in jobs:
         try:
-            removed = await repos.seen.purge_older_than(max_age)
-            if removed:
-                log.info("Purged %d old seen_requests rows", removed)
+            removed[table] = await repo.purge_older_than(timedelta(days=days))
+            if removed[table]:
+                log.info("Purged %d old %s rows", removed[table], table)
         except Exception:
-            log.exception("seen_requests purge failed")
+            log.exception("%s purge failed", table)
+    return removed
+
+
+async def _purge_loop(repos: Repositories) -> None:
+    """Hourly retention so tables don't grow forever."""
+    while True:
+        await purge_once(repos)
         await asyncio.sleep(_PURGE_INTERVAL_S)
 
 
@@ -97,7 +110,7 @@ async def main() -> None:
     try:
         # ── background tasks ──────────────────────────────────────────────────
         worker_task = asyncio.create_task(delivery_worker(queue, bot, repos), name="delivery")
-        purge_task = asyncio.create_task(_purge_seen_requests(repos), name="purge")
+        purge_task = asyncio.create_task(_purge_loop(repos), name="purge")
 
         # ── aiohttp server ────────────────────────────────────────────────────
         app = build_app(bot, dp, repos, queue)

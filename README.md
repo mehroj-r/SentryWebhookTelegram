@@ -140,6 +140,7 @@ All settings are environment variables (or `.env`). See `.env.example` for a com
 | `QUEUE_MAX_SIZE` | `1000` | Pending deliveries before Sentry gets `503 Retry-After` |
 | `MAX_BODY_BYTES` | `10485760` | Largest accepted webhook body |
 | `SEEN_REQUEST_TTL_DAYS` | `7` | How long Request-IDs are remembered for de-duplication |
+| `LOG_RETENTION_DAYS` | `30` | Delete delivery-log and audit-log rows older than this, hourly (0 = keep). Threading and `/retry_failed` only reach back this far |
 
 ## HTTP endpoints
 
@@ -158,8 +159,6 @@ All settings are environment variables (or `.env`). See `.env.example` for a com
   and set `DB_PATH=postgresql://sentry:sentry@postgres/sentry`.
 - **systemd**: see `deploy/sentry-telegram.service` (install steps in its header).
 - Shutting down on `SIGTERM` stops intake first, then drains the delivery queue for up to 15 s.
-- The delivery log and audit log are not pruned automatically yet. On a busy installation,
-  delete old rows from `deliveries` and `audit_log` periodically.
 
 ## Development
 
