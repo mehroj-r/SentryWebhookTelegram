@@ -29,6 +29,7 @@ from .sentry.formatters import (
     format_digest,
     format_event,
     status_footer,
+    strip_html,
 )
 from .sentry.parser import ParsedEvent
 
@@ -157,20 +158,25 @@ async def _send_to_chat(
     text: str,
     reply_to: Optional[int] = None,
     thread_id: Optional[int] = None,
+    plain: bool = False,
 ) -> SendResult:
     """
     Send a message, honouring Telegram rate limits and retrying transient
     failures with exponential backoff. `reply_to` threads the message under an
     earlier post (the original is allowed to be gone); `thread_id` targets a
-    forum topic.
+    forum topic. `text` is always our HTML; `plain` sends it as plain text
+    (chats with /format plain) — what we store stays HTML.
     """
     reply = (
         ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
     )
+    extra: dict = {}
+    if plain:
+        text, extra["parse_mode"] = strip_html(text), None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
             sent = await bot.send_message(
-                chat_id, text, reply_parameters=reply, message_thread_id=thread_id
+                chat_id, text, reply_parameters=reply, message_thread_id=thread_id, **extra
             )
             return SendResult(message_id=sent.message_id)
         except TelegramRetryAfter as exc:
@@ -229,18 +235,25 @@ async def _record(
         log.exception("Could not record delivery for chat_id=%s", target.chat_id)
 
 
-async def _chat_lang(repos: Repositories, chat_id: int) -> str:
-    """The chat's /lang setting (default English) for formatting events."""
+async def _chat_prefs(repos: Repositories, chat_id: int) -> tuple[str, bool]:
+    """(language, plain-text?) from the chat's /lang and /format settings."""
     try:
-        prefs = await repos.chat_settings.get(chat_id)
+        prefs = await repos.chat_settings.get(chat_id) or {}
     except Exception:
         log.exception("Chat settings lookup failed for chat_id=%s", chat_id)
-        return DEFAULT_LANGUAGE
-    return normalize_language((prefs or {}).get("language")) or DEFAULT_LANGUAGE
+        prefs = {}
+    lang = normalize_language(prefs.get("language")) or DEFAULT_LANGUAGE
+    return lang, prefs.get("format") == "plain"
 
 
 async def _stamp_original(
-    bot: Bot, repos: Repositories, event: ParsedEvent, chat_id: int, prior: dict, lang: str = DEFAULT_LANGUAGE
+    bot: Bot,
+    repos: Repositories,
+    event: ParsedEvent,
+    chat_id: int,
+    prior: dict,
+    lang: str = DEFAULT_LANGUAGE,
+    plain: bool = False,
 ) -> None:
     """
     Append a status footer (e.g. "✅ RESOLVED by Alice") to the message that
@@ -254,7 +267,12 @@ async def _stamp_original(
     if new_text is None:
         return
     try:
-        await bot.edit_message_text(new_text, chat_id=chat_id, message_id=prior["tg_message_id"])
+        if plain:
+            await bot.edit_message_text(
+                strip_html(new_text), chat_id=chat_id, message_id=prior["tg_message_id"], parse_mode=None
+            )
+        else:
+            await bot.edit_message_text(new_text, chat_id=chat_id, message_id=prior["tg_message_id"])
         await repos.deliveries.update_text(prior["id"], new_text)
     except TelegramRetryAfter:
         log.debug("Rate limited while stamping message %s; skipping", prior["tg_message_id"])
@@ -321,7 +339,7 @@ async def send_event(
     texts: dict[str, str] = {}  # one rendering per language
     for target in targets.values():
         chat_id = target.chat_id
-        lang = await _chat_lang(repos, chat_id)
+        lang, plain = await _chat_prefs(repos, chat_id)
         if lang not in texts:
             texts[lang] = format_event(event, lang)
         text = texts[lang]
@@ -358,10 +376,11 @@ async def send_event(
             bot, chat_id, text,
             reply_to=prior["tg_message_id"] if prior else None,
             thread_id=target.thread_id,
+            plain=plain,
         )
         await _record(repos, event, target, result, text)
         if prior and result.ok:
-            await _stamp_original(bot, repos, event, chat_id, prior, lang)
+            await _stamp_original(bot, repos, event, chat_id, prior, lang, plain)
 
 
 async def retry_failed(
@@ -375,7 +394,8 @@ async def retry_failed(
     """
     sent = failed = 0
     for row in await repos.deliveries.retryable(chat_id, limit):
-        result = await _send_to_chat(bot, row["chat_id"], row["text"], thread_id=row["thread_id"])
+        _, plain = await _chat_prefs(repos, row["chat_id"])
+        result = await _send_to_chat(bot, row["chat_id"], row["text"], thread_id=row["thread_id"], plain=plain)
         await repos.deliveries.set_status(row["id"], "retried")
         metrics.deliveries.inc(status="sent" if result.ok else "failed")
         await repos.deliveries.record(
@@ -404,11 +424,11 @@ async def flush_digests(bot: Bot, repos: Repositories, force: bool = False) -> i
         by_thread: dict[Optional[int], list[dict]] = {}
         for it in items:
             by_thread.setdefault(it.get("thread_id"), []).append(it)
-        lang = await _chat_lang(repos, chat_id)
+        lang, plain = await _chat_prefs(repos, chat_id)
         for thread_id, group in by_thread.items():
             text = format_digest(group, lang=lang)
             target = Target(chat_id=chat_id, thread_id=thread_id)
-            result = await _send_to_chat(bot, chat_id, text, thread_id=thread_id)
+            result = await _send_to_chat(bot, chat_id, text, thread_id=thread_id, plain=plain)
             sample = ParsedEvent(
                 resource="digest", action="sent", project_slug=None, project_ref_id=None,
                 environment=None, title=f"{len(group)} events", web_url=None,
@@ -420,9 +440,8 @@ async def flush_digests(bot: Bot, repos: Repositories, force: bool = False) -> i
 
 async def send_burst_summary(bot: Bot, repos: Repositories, summary: Summary) -> None:
     """Post the '+N more events' line, threaded under the issue's last message."""
-    text = format_burst_summary(
-        summary.sample, summary.count, summary.window_s, await _chat_lang(repos, summary.chat_id)
-    )
+    lang, plain = await _chat_prefs(repos, summary.chat_id)
+    text = format_burst_summary(summary.sample, summary.count, summary.window_s, lang)
     prior = None
     try:
         prior = await repos.deliveries.last_for_issue(summary.chat_id, summary.issue_id)
@@ -431,7 +450,7 @@ async def send_burst_summary(bot: Bot, repos: Repositories, summary: Summary) ->
     thread_id = prior.get("thread_id") if prior else None
     result = await _send_to_chat(
         bot, summary.chat_id, text,
-        reply_to=prior["tg_message_id"] if prior else None, thread_id=thread_id,
+        reply_to=prior["tg_message_id"] if prior else None, thread_id=thread_id, plain=plain,
     )
     await _record(repos, summary.sample, Target(summary.chat_id, thread_id), result, text)
 

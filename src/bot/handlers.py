@@ -19,7 +19,7 @@ from ..filters import LEVELS, normalize_level, parse_actions, parse_duration, sk
 from ..i18n import LANGUAGE_NAMES, normalize_language, t
 from ..route_io import MAX_BYTES, SLUG_RE as _SLUG_RE, export_routes, parse_import
 from ..samples import KINDS as SAMPLE_KINDS, sample_event
-from ..sentry.formatters import format_event
+from ..sentry.formatters import format_event, strip_html
 from .keyboards import (
     ANY_ENV,
     DelRouteCallback,
@@ -497,6 +497,18 @@ async def cmd_lang(message: Message, repos: Repositories, lang: str) -> None:
     await message.answer(t(new, "lang.set", name=LANGUAGE_NAMES[new]) + "\n\n" + _settings_text(prefs, new))
 
 
+@admin_router.message(Command("format"))
+async def cmd_format(message: Message, repos: Repositories, lang: str) -> None:
+    parts = (message.text or "").split()[1:]
+    fmt = parts[0].lower() if len(parts) == 1 else None
+    if fmt not in ("html", "plain"):
+        await message.answer(t(lang, "format.usage"))
+        return
+    prefs = await repos.chat_settings.update(message.chat.id, format=fmt)
+    await _audit(repos, message.chat.id, message.from_user, "settings.format", fmt)
+    await message.answer(t(lang, "format.set", format=fmt) + "\n\n" + _settings_text(prefs, lang))
+
+
 @admin_router.message(Command("quiet"))
 async def cmd_quiet(message: Message, repos: Repositories, lang: str) -> None:
     parts = (message.text or "").split()[1:]
@@ -608,7 +620,12 @@ async def cmd_test(message: Message, repos: Repositories, lang: str) -> None:
     org, project, environment = _sample_target(routes)
     event = sample_event(kind, project, environment)
     event.org = org
-    await message.answer(format_event(event, lang))
+    text = format_event(event, lang)
+    prefs = await repos.chat_settings.get(message.chat.id)
+    if (prefs or {}).get("format") == "plain":
+        await message.answer(strip_html(text), parse_mode=None)
+    else:
+        await message.answer(text)
 
     if not routes:
         verdict = t(lang, "test.no_routes")

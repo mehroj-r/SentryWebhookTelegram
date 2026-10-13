@@ -299,7 +299,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "🌙 Quiet hours: <code>{quiet}</code> (fatal events still delivered)\n"
             "🗣 Language: <code>{language}</code>\n"
             "📝 Format: <code>{format}</code>\n\n"
-            "Change with /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;, /lang &lt;en|ru|uz&gt;"
+            "Change with /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;, /lang &lt;en|ru|uz&gt;, /format &lt;html|plain&gt;"
         ),
         "ru": (
             "<b>Настройки чата</b>\n"
@@ -307,7 +307,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "🌙 Тихие часы: <code>{quiet}</code> (события уровня fatal доставляются всегда)\n"
             "🗣 Язык: <code>{language}</code>\n"
             "📝 Формат: <code>{format}</code>\n\n"
-            "Изменить: /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;, /lang &lt;en|ru|uz&gt;"
+            "Изменить: /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;, /lang &lt;en|ru|uz&gt;, /format &lt;html|plain&gt;"
         ),
         "uz": (
             "<b>Chat sozlamalari</b>\n"
@@ -315,7 +315,7 @@ CATALOG: dict[str, dict[str, str]] = {
             "🌙 Sokin soatlar: <code>{quiet}</code> (fatal hodisalar baribir yetkaziladi)\n"
             "🗣 Til: <code>{language}</code>\n"
             "📝 Format: <code>{format}</code>\n\n"
-            "Oʻzgartirish: /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;, /lang &lt;en|ru|uz&gt;"
+            "Oʻzgartirish: /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt;, /lang &lt;en|ru|uz&gt;, /format &lt;html|plain&gt;"
         ),
     },
     "tz.usage": {
@@ -347,6 +347,16 @@ CATALOG: dict[str, dict[str, str]] = {
         "en": "🌙 Quiet hours set: <code>{start}–{end}</code>. Non-fatal events are held and sent as a digest when they end.",
         "ru": "🌙 Тихие часы: <code>{start}–{end}</code>. События (кроме fatal) придержим и пришлём сводкой по окончании.",
         "uz": "🌙 Sokin soatlar: <code>{start}–{end}</code>. Fatal boʻlmagan hodisalar ushlab turiladi va tugagach jamlanma sifatida yuboriladi.",
+    },
+    "format.usage": {
+        "en": "Usage: <code>/format &lt;html|plain&gt;</code> — plain sends alerts without formatting or links",
+        "ru": "Использование: <code>/format &lt;html|plain&gt;</code> — plain отправляет оповещения без форматирования и ссылок",
+        "uz": "Foydalanish: <code>/format &lt;html|plain&gt;</code> — plain ogohlantirishlarni formatlash va havolalarsiz yuboradi",
+    },
+    "format.set": {
+        "en": "📝 Alert format set to <code>{format}</code>.",
+        "ru": "📝 Формат оповещений: <code>{format}</code>.",
+        "uz": "📝 Ogohlantirish formati: <code>{format}</code>.",
     },
     "lang.usage": {
         "en": "Usage: <code>/lang &lt;en|ru|uz&gt;</code>",

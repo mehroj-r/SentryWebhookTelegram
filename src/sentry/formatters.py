@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 from typing import Optional
 
 from ..i18n import plural, t
@@ -103,6 +104,26 @@ def _clamp(text: str) -> str:
         return plain[: TELEGRAM_MAX_LEN - 1] + "…"
     out.append("…")
     return "\n".join(out)
+
+
+_LINK_RE = re.compile(r'<a href="([^"]*)">(.*?)</a>', re.DOTALL)
+_TAG_RE = re.compile(r"</?[a-z][^>]*>")
+
+
+def strip_html(text: str) -> str:
+    """
+    Plain-text rendering of our own Telegram HTML (for chats with /format
+    plain): links become "text (url)", other tags are dropped and entities
+    unescaped. Only meant for HTML this module produced.
+    """
+    def _link_text(m: re.Match) -> str:
+        url, label = html.unescape(m.group(1)), m.group(2)
+        plain_label = html.unescape(_TAG_RE.sub("", label))
+        return plain_label if plain_label == url else f"{plain_label} ({url})"
+
+    # Escape the link output so the generic unescape below doesn't double-decode it.
+    text = _LINK_RE.sub(lambda m: html.escape(_link_text(m), quote=False), text)
+    return html.unescape(_TAG_RE.sub("", text))
 
 
 # Issue lifecycle actions that should be stamped onto the original message.
