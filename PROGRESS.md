@@ -35,7 +35,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 22b | Localisation: event formatting | `a943c0e` | `fmt.*` catalog keys + `plural()` (ru one/few/many); `format_event/format_digest/format_burst_summary/status_footer` take `lang` (default en, English output byte-identical); `delivery._chat_lang()`, one rendering per language per event. Sentry action tokens (CREATED…) stay untranslated |
 | 23 | `/stats` | `2bf3bf9` | `deliveries.counts_by_project(chat_id, since)` (digest sends excluded); public `/stats`: 24h + 7d totals by status and top 10 projects; `retried` rows not counted; localised |
 | 24 | Plain-text format mode | `443cf10` | `/format html|plain` (admin, audited); `strip_html()` in formatters (links → "text (url)"); conversion happens only at send/edit time (`_send_to_chat(plain=)`, stamping, retries, digests, bursts, `/test`) — stored delivery text stays HTML. Bot command replies stay HTML |
-| 25 | Replay protection | _next commit_ | `REPLAY_WINDOW_SECONDS` (default 300, 0 off); `_is_stale()` after signature check, before dedup; ± window (clock skew), ms timestamps OK, missing header passes, garbage rejected; metric reason `stale`. Header is not signed by Sentry → only stops verbatim replays. If Sentry retries a 503 later than the window, that retry is rejected |
+| 25 | Replay protection | `0e17b2d` | `REPLAY_WINDOW_SECONDS` (default 300, 0 off); `_is_stale()` after signature check, before dedup; ± window (clock skew), ms timestamps OK, missing header passes, garbage rejected; metric reason `stale`. Header is not signed by Sentry → only stops verbatim replays. If Sentry retries a 503 later than the window, that retry is rejected |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
