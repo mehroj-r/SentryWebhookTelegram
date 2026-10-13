@@ -252,6 +252,46 @@ class RouteRepository(BaseRepository):
                 await session.rollback()
                 return False
 
+    async def import_routes(
+        self, chat_id: int, routes: list[dict], created_by: Optional[int] = None
+    ) -> tuple[int, int]:
+        """
+        Merge `routes` (validated dicts from `route_io.parse_import`) into the
+        chat's routes in one transaction: new (project, environment) pairs are
+        added, existing ones get their filter / digest / topic settings
+        overwritten. Routes not in the import are left alone.
+        Returns (added, updated).
+        """
+        added = updated = 0
+        async with self._sessionmaker() as session:
+            for r in routes:
+                env = r["environment"]
+                existing = await session.scalar(
+                    select(Route).where(
+                        Route.project == r["project"],
+                        Route.environment.is_(None) if env is None else Route.environment == env,
+                        Route.chat_id == chat_id,
+                    )
+                )
+                if existing is None:
+                    existing = Route(
+                        project=r["project"],
+                        environment=env,
+                        chat_id=chat_id,
+                        created_by=created_by,
+                        created_at=_utcnow(),
+                    )
+                    session.add(existing)
+                    added += 1
+                else:
+                    updated += 1
+                existing.min_level = r["min_level"]
+                existing.actions = r["actions"]
+                existing.digest_minutes = r["digest_minutes"]
+                existing.thread_id = r["thread_id"]
+            await session.commit()
+        return added, updated
+
     async def remove(self, route_id: int, chat_id: int) -> bool:
         """
         Delete a route, but only if it belongs to `chat_id`.

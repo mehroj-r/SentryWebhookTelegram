@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (83 tests at last update).
+Run `.venv/bin/python -m pytest` before and after every change (105 tests at last update).
 
 ## Done
 
@@ -19,13 +19,13 @@ Run `.venv/bin/python -m pytest` before and after every change (83 tests at last
 | 8 | Multi-org | `00ab523` | `SENTRY_CLIENT_SECRETS`, `installations` table, `org/slug` routes, `[org]` prefix |
 | 9 | Wildcard routes | `f3b41b9` | fnmatch on `routes.project` containing `*`; exact beats pattern |
 | 10 | Per-chat settings | `82a2579` | `chat_settings` table, `/settings` `/tz` `/quiet`; topic routing via `thread_id` |
+| 11 | Export / import routes | _next commit_ | `src/route_io.py` (format v1, all-or-nothing validation), `RouteRepository.import_routes` merges; `/export` public, `/import` admin; thread ids dropped when importing into another chat |
 
 Migrations so far: `0001`…`0007`. Next revision id: `0008`.
 
 ## Remaining (suggested order)
 
 Routing and management
-- [ ] **Export / import routes** — `/export` dumps chat routes (incl. filters, digest, thread) as JSON file; `/import` reads a JSON document/reply. Validate against `_SLUG_RE`.
 - [ ] **Audit log + `/routes verbose`** — new `audit_log` table (chat_id, user_id, action, details, ts); write on route add/remove/filter/mute/digest/settings change. `/whoami`.
 - [ ] **Per-chat admin roles** — when `ADMIN_IDS` is empty, allow Telegram group admins (`get_chat_member` status creator/administrator) in groups; private chats open. Cache member status ~5 min. Touch `src/bot/middlewares.py`.
 - [ ] **`/test` command** — build a fake `ParsedEvent` (issue.created) and run `format_event` → send to current chat/topic; optionally `/test error|metric_alert`.
@@ -49,8 +49,8 @@ Polish
 
 ## Conventions
 
-- Tests: `tests/bot_harness.py` drives aiogram handlers with a fake session (`Harness(repos)`, `.command()`, `.callback()`); `tests/test_web.py` has the `client` fixture for the Sentry HTTP endpoint; `repos` fixture gives an in-memory DB.
+- Tests: `tests/bot_harness.py` drives aiogram handlers with a fake session (`Harness(repos)`, `.command(..., reply_to=, document=)`, `.callback()`, `.upload()` for downloadable files); `tests/test_web.py` has the `client` fixture for the Sentry HTTP endpoint; `repos` fixture gives an in-memory DB.
 - Every schema change = new file in `migrations/versions/` with a defensive `upgrade()` (check `has_table` / column names) and a model update; `tests/test_migrations.py::test_models_match_latest_migration` fails on drift.
-- Commands that take user text must escape it (`html.escape`) and validate against `_SLUG_RE` in `src/bot/handlers.py`.
+- Commands that take user text must escape it (`html.escape`) and validate against `SLUG_RE` (defined in `src/route_io.py`, imported as `_SLUG_RE` in handlers).
 - Admin-gated commands go on `admin_router`; read-only ones on `public_router`.
 - Config values live in `src/config.py`; document new ones in `.env.example`.

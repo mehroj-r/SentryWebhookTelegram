@@ -9,11 +9,12 @@ from typing import Optional
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Document, Message
 
 from ..chat_settings import format_local, parse_quiet_range, parse_timezone
 from ..db import Repositories
 from ..filters import LEVELS, normalize_level, parse_actions, parse_duration
+from ..route_io import MAX_BYTES, SLUG_RE as _SLUG_RE, export_routes, parse_import
 from .keyboards import (
     ANY_ENV,
     DelRouteCallback,
@@ -28,9 +29,6 @@ from .middlewares import AdminMiddleware
 
 log = logging.getLogger(__name__)
 
-# Sentry slugs: lowercase letters, digits, '-' and '_' (we're lenient on case).
-# Project key: "slug", "org/slug" (multi-org) or a wildcard pattern ("backend-*", "*").
-_SLUG_RE = re.compile(r"^(?:[A-Za-z0-9_\-.*]{1,64}/)?[A-Za-z0-9_\-.*]{1,64}$")
 _ROUTES_PROMPT = "Routes for this chat — tap a button to remove it:"
 
 
@@ -85,6 +83,7 @@ async def cmd_start(message: Message) -> None:
         "• /digest &lt;slug|all&gt; &lt;minutes|off&gt; — batch events into periodic digests\n"
         "• /settings, /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt; — chat preferences\n"
         "• Run /subscribe or /add_route inside a forum topic to post there\n"
+        "• /export — download this chat's routes as JSON; /import — load them (attach or reply to the file)\n"
         "• /last — show the last events delivered to this chat\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
         "• /help — show this message",
@@ -415,6 +414,73 @@ async def cmd_quiet(message: Message, repos: Repositories) -> None:
         f"🌙 Quiet hours set: <code>{rng[0]}–{rng[1]}</code>. Non-fatal events are held and sent as a digest when they end.\n\n"
         + _settings_text(prefs)
     )
+
+
+@public_router.message(Command("export"))
+async def cmd_export(message: Message, repos: Repositories) -> None:
+    routes = await repos.routes.list_for_chat(message.chat.id)
+    if not routes:
+        await message.answer("No routing rules to export in this chat.")
+        return
+    data = export_routes(message.chat.id, routes).encode()
+    await message.answer_document(
+        BufferedInputFile(data, filename=f"routes-{message.chat.id}.json"),
+        caption=f"📦 {len(routes)} route(s). Send this file with the caption /import (or reply /import to it) in any chat to load them.",
+    )
+
+
+_IMPORT_USAGE = (
+    "Usage: send an exported JSON file with the caption <code>/import</code>, "
+    "reply <code>/import</code> to such a file, or paste the JSON after the command."
+)
+
+
+async def _import_source(message: Message, document: Optional[Document]) -> Optional[str]:
+    """JSON text from: attached/replied-to document, inline after /import, or replied-to text."""
+    reply = message.reply_to_message
+    if document is not None:
+        buf = await message.bot.download(document)
+        return buf.read().decode("utf-8", errors="replace") if buf else None
+    _, _, inline = (message.text or message.caption or "").partition(" ")
+    if inline.strip():
+        return inline
+    if reply is not None and reply.text:
+        return reply.text
+    return None
+
+
+@admin_router.message(Command("import"))
+async def cmd_import(message: Message, repos: Repositories) -> None:
+    reply = message.reply_to_message
+    document = message.document or (reply.document if reply else None)
+    if document is not None and (document.file_size or 0) > MAX_BYTES:
+        await message.answer(f"❌ File is larger than {MAX_BYTES // 1024} KB.")
+        return
+    text = await _import_source(message, document)
+    if text is None:
+        await message.answer(_IMPORT_USAGE)
+        return
+
+    result = parse_import(text)
+    if result.errors:
+        shown = "\n".join(f"• {escape(e)}" for e in result.errors[:10])
+        more = f"\n…and {len(result.errors) - 10} more" if len(result.errors) > 10 else ""
+        await message.answer(f"❌ Nothing imported:\n{shown}{more}")
+        return
+    if not result.routes:
+        await message.answer("The document contains no routes.")
+        return
+
+    # Topic ids only mean something in the chat they came from. Elsewhere,
+    # post into the topic /import was sent from (or the main chat).
+    if result.source_chat_id != message.chat.id:
+        topic = _topic_of(message)
+        for r in result.routes:
+            r["thread_id"] = topic
+
+    created_by = message.from_user.id if message.from_user else None
+    added, updated = await repos.routes.import_routes(message.chat.id, result.routes, created_by)
+    await message.answer(f"📥 Imported {len(result.routes)} route(s): {added} added, {updated} updated.")
 
 
 @admin_router.callback_query(DelRouteCallback.filter())

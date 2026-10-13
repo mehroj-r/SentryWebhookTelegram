@@ -5,8 +5,16 @@ import datetime as dt
 import itertools
 
 from aiogram import Bot, Dispatcher
-from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, TelegramMethod
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.client.telegram import PRODUCTION
+from aiogram.methods import (
+    AnswerCallbackQuery,
+    EditMessageText,
+    GetFile,
+    SendDocument,
+    SendMessage,
+    TelegramMethod,
+)
+from aiogram.types import CallbackQuery, Chat, Document, File, Message, Update, User
 
 from src.bot.handlers import admin_router, public_router
 
@@ -16,9 +24,12 @@ GROUP = Chat(id=-100500, type="supergroup", title="Ops")
 
 
 class FakeSession:
+    api = PRODUCTION
+
     def __init__(self) -> None:
         self.calls: list[TelegramMethod] = []
         self._ids = itertools.count(1000)
+        self.files: dict[str, bytes] = {}  # file_id → content, served by GetFile + stream_content
 
     async def __call__(self, bot: Bot, method: TelegramMethod, timeout=None):  # noqa: ANN001
         self.calls.append(method)
@@ -29,7 +40,12 @@ class FakeSession:
             )
         if isinstance(method, EditMessageText):
             return True
+        if isinstance(method, GetFile):
+            return File(file_id=method.file_id, file_unique_id=method.file_id, file_path=method.file_id)
         return True
+
+    async def stream_content(self, url, headers=None, timeout=30, chunk_size=65536, raise_for_status=True):  # noqa: ANN001
+        yield self.files[url.rsplit("/", 1)[-1]]
 
     async def close(self) -> None:
         pass
@@ -45,6 +61,10 @@ class FakeSession:
     @property
     def answers(self) -> list[AnswerCallbackQuery]:
         return [c for c in self.calls if isinstance(c, AnswerCallbackQuery)]
+
+    @property
+    def documents(self) -> list[SendDocument]:
+        return [c for c in self.calls if isinstance(c, SendDocument)]
 
     @property
     def last_text(self) -> str:
@@ -74,13 +94,37 @@ class Harness:
         self._update_ids = itertools.count(1)
         self._msg_ids = itertools.count(1)
 
-    async def command(self, text: str, user: User = ADMIN, chat: Chat = GROUP) -> None:
+    async def command(
+        self,
+        text: str,
+        user: User = ADMIN,
+        chat: Chat = GROUP,
+        *,
+        reply_to: Message | None = None,
+        document: bytes | None = None,
+    ) -> None:
+        """Send `text` as a command; with `document` it becomes the caption of an uploaded file."""
         cmd_len = len(text.split()[0])
+        entities = [{"type": "bot_command", "offset": 0, "length": cmd_len}]
+        if document is not None:
+            fields = {"document": self.upload(document), "caption": text, "caption_entities": entities}
+        else:
+            fields = {"text": text, "entities": entities}
         message = Message(
-            message_id=next(self._msg_ids), date=dt.datetime.now(), chat=chat, from_user=user, text=text,
-            entities=[{"type": "bot_command", "offset": 0, "length": cmd_len}],
+            message_id=next(self._msg_ids), date=dt.datetime.now(), chat=chat, from_user=user,
+            reply_to_message=reply_to, **fields,
         )
         await self.dp.feed_update(self.bot, Update(update_id=next(self._update_ids), message=message))
+
+    def upload(self, content: bytes, file_size: int | None = None) -> Document:
+        file_id = f"file{next(self._msg_ids)}"
+        self.session.files[file_id] = content
+        return Document(file_id=file_id, file_unique_id=file_id, file_name="routes.json",
+                        file_size=len(content) if file_size is None else file_size)
+
+    def message(self, chat: Chat = GROUP, *, text: str | None = None, document: Document | None = None) -> Message:
+        """A plain message to reply to."""
+        return Message(message_id=next(self._msg_ids), date=dt.datetime.now(), chat=chat, text=text, document=document)
 
     async def callback(self, data: str, user: User = ADMIN, chat: Chat = GROUP) -> None:
         message = Message(message_id=next(self._msg_ids), date=dt.datetime.now(), chat=chat, text="menu")
