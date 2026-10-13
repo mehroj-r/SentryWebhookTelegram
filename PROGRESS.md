@@ -25,7 +25,7 @@ Run `.venv/bin/python -m pytest` before and after every change (146 tests at las
 | 14 | `/test` command | `08f6894` | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
 | 15 | Web admin page | `84015ad` | `src/admin_web.py`, `GET /admin`, `ADMIN_TOKEN` (empty → 404); bearer / `X-Admin-Token` / `?token=`; no-store, CSP, no-referrer; `routes.list_all()`, `environments.list_all()` |
 | 16 | Dead-letter retry | `aaa5069` | failed rows now keep `text`; `delivery.retry_failed()` marks originals `retried` and logs a fresh row; `/retry_failed [N]` (admin); `POST /admin/retry` (token in form/header, not query) |
-| 17 | Prometheus `/metrics` | _next commit_ | `src/metrics.py` (hand-rolled labelled counters, `metrics.reset()` for tests); webhooks received/rejected/deduplicated, deliveries by status (counted in `_record` + retries), queue gauge; optional `METRICS_TOKEN` |
+| 17 | Prometheus `/metrics` | `81c6964` | `src/metrics.py` (hand-rolled labelled counters, `metrics.reset()` for tests); webhooks received/rejected/deduplicated, deliveries by status (counted in `_record` + retries), queue gauge; optional `METRICS_TOKEN` |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
