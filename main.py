@@ -13,6 +13,7 @@ from src.config import settings
 from src.db import Database, Repositories
 from src.bot.handlers import admin_router, public_router
 from src.delivery import delivery_worker
+from src.selfcheck import self_check
 from src.web import build_app
 
 logging.basicConfig(
@@ -86,6 +87,7 @@ async def main() -> None:
     worker_task: asyncio.Task | None = None
     purge_task: asyncio.Task | None = None
     polling_task: asyncio.Task | None = None
+    check_task: asyncio.Task | None = None
 
     try:
         # ── background tasks ──────────────────────────────────────────────────
@@ -106,6 +108,8 @@ async def main() -> None:
 
         # ── Telegram: webhook registration or polling ─────────────────────────
         polling_task = await start_telegram(bot, dp)
+        # Diagnostics only — don't hold up startup on Telegram round-trips.
+        check_task = asyncio.create_task(self_check(bot, repos), name="selfcheck")
 
         # ── run until interrupted (or until the worker dies) ──────────────────
         stop_event = asyncio.Event()
@@ -151,9 +155,10 @@ async def main() -> None:
             except Exception:
                 log.exception("Delivery worker failed during shutdown")
 
-        if purge_task is not None:
-            purge_task.cancel()
-            await asyncio.gather(purge_task, return_exceptions=True)
+        for task in (purge_task, check_task):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
         await db.close()
         await bot.session.close()
