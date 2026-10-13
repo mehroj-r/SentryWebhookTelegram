@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import (
+    AuditEntry,
     ChatSettings,
     Delivery,
     DigestItem,
@@ -696,6 +697,33 @@ def _chat_settings_dict(r: ChatSettings) -> dict:
     }
 
 
+# ── Audit log ──────────────────────────────────────────────────────────────────
+
+
+class AuditRepository(BaseRepository):
+    async def record(
+        self, chat_id: int, user_id: Optional[int], action: str, details: Optional[str] = None
+    ) -> None:
+        async with self._sessionmaker() as session:
+            session.add(AuditEntry(ts=_utcnow(), chat_id=chat_id, user_id=user_id, action=action, details=details))
+            await session.commit()
+
+    async def recent_for_chat(self, chat_id: int, limit: int = 10) -> list[dict]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(AuditEntry)
+                    .where(AuditEntry.chat_id == chat_id)
+                    .order_by(AuditEntry.ts.desc(), AuditEntry.id.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return [
+                {"ts": r.ts, "user_id": r.user_id, "action": r.action, "details": r.details}
+                for r in rows
+            ]
+
+
 # ── Container ──────────────────────────────────────────────────────────────────
 
 
@@ -711,3 +739,4 @@ class Repositories:
         self.deliveries = DeliveryRepository(sessionmaker)
         self.digests = DigestRepository(sessionmaker)
         self.chat_settings = ChatSettingsRepository(sessionmaker)
+        self.audit = AuditRepository(sessionmaker)

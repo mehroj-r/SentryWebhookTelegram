@@ -137,3 +137,17 @@ class ChatSettings(Base):
     language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     format: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # html | plain
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuditEntry(Base):
+    """Who changed what in a chat's configuration (routes, filters, settings)."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_log_chat_ts", "chat_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (105 tests at last update).
+Run `.venv/bin/python -m pytest` before and after every change (110 tests at last update).
 
 ## Done
 
@@ -20,13 +20,13 @@ Run `.venv/bin/python -m pytest` before and after every change (105 tests at las
 | 9 | Wildcard routes | `f3b41b9` | fnmatch on `routes.project` containing `*`; exact beats pattern |
 | 10 | Per-chat settings | `82a2579` | `chat_settings` table, `/settings` `/tz` `/quiet`; topic routing via `thread_id` |
 | 11 | Export / import routes | `b6d9ff8` | `src/route_io.py` (format v1, all-or-nothing validation), `RouteRepository.import_routes` merges; `/export` public, `/import` admin; thread ids dropped when importing into another chat |
+| 12 | Audit log, `/routes verbose`, `/whoami` | _next commit_ | `audit_log` table (0008), `repos.audit`; `_audit()` helper in handlers logs only real changes; `is_admin()` in middlewares |
 
-Migrations so far: `0001`…`0007`. Next revision id: `0008`.
+Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
 ## Remaining (suggested order)
 
 Routing and management
-- [ ] **Audit log + `/routes verbose`** — new `audit_log` table (chat_id, user_id, action, details, ts); write on route add/remove/filter/mute/digest/settings change. `/whoami`.
 - [ ] **Per-chat admin roles** — when `ADMIN_IDS` is empty, allow Telegram group admins (`get_chat_member` status creator/administrator) in groups; private chats open. Cache member status ~5 min. Touch `src/bot/middlewares.py`.
 - [ ] **`/test` command** — build a fake `ParsedEvent` (issue.created) and run `format_event` → send to current chat/topic; optionally `/test error|metric_alert`.
 
@@ -53,4 +53,5 @@ Polish
 - Every schema change = new file in `migrations/versions/` with a defensive `upgrade()` (check `has_table` / column names) and a model update; `tests/test_migrations.py::test_models_match_latest_migration` fails on drift.
 - Commands that take user text must escape it (`html.escape`) and validate against `SLUG_RE` (defined in `src/route_io.py`, imported as `_SLUG_RE` in handlers).
 - Admin-gated commands go on `admin_router`; read-only ones on `public_router`.
+- Commands that change chat config call `_audit(repos, chat_id, user, action, details)` after a successful change (details are plain text; escaped on display).
 - Config values live in `src/config.py`; document new ones in `.env.example`.

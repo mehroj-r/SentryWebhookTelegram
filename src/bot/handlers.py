@@ -9,7 +9,7 @@ from typing import Optional
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, CallbackQuery, Document, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Document, Message, User
 
 from ..chat_settings import format_local, parse_quiet_range, parse_timezone
 from ..db import Repositories
@@ -25,7 +25,7 @@ from .keyboards import (
     resolve_key,
     routes_keyboard,
 )
-from .middlewares import AdminMiddleware
+from .middlewares import AdminMiddleware, is_admin
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,20 @@ def _topic_of(message: Message) -> Optional[int]:
 def _route_label(project: str, environment: Optional[str]) -> str:
     """HTML-safe '<b>project</b> / env' label built from user-supplied text."""
     return f"<b>{escape(project)}</b> / {escape(environment or 'any environment')}"
+
+
+async def _audit(
+    repos: Repositories, chat_id: int, user: Optional[User], action: str, details: Optional[str] = None
+) -> None:
+    """Record a configuration change; never let audit failures break the command."""
+    try:
+        await repos.audit.record(chat_id, user.id if user else None, action, details)
+    except Exception:  # noqa: BLE001
+        log.exception("failed to write audit entry %s for chat %s", action, chat_id)
+
+
+def _plain_route(project: str, environment: Optional[str]) -> str:
+    return f"{project} / {environment or '*'}"
 
 
 async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
@@ -76,7 +90,7 @@ async def cmd_start(message: Message) -> None:
         "I forward Sentry webhook events to Telegram chats.\n\n"
         "<b>Commands:</b>\n"
         "• /subscribe — route Sentry events to this chat\n"
-        "• /routes — view and remove routing rules for this chat\n"
+        "• /routes — view and remove routing rules; /routes verbose — details + recent changes\n"
         "• /add_route &lt;slug|pattern&gt; [env] — add a route (wildcards: backend-*, *)\n"
         "• /filter &lt;slug|all&gt; level=&lt;min&gt; actions=&lt;a,b&gt; — noise control\n"
         "• /mute &lt;30m|2h|1d&gt; [slug] and /unmute [slug] — pause alerts\n"
@@ -85,7 +99,7 @@ async def cmd_start(message: Message) -> None:
         "• Run /subscribe or /add_route inside a forum topic to post there\n"
         "• /export — download this chat's routes as JSON; /import — load them (attach or reply to the file)\n"
         "• /last — show the last events delivered to this chat\n"
-        "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID)\n"
+        "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID); /whoami — your id and permissions\n"
         "• /help — show this message",
     )
 
@@ -97,6 +111,10 @@ async def cmd_chat_id(message: Message) -> None:
 
 @public_router.message(Command("routes"))
 async def cmd_routes(message: Message, repos: Repositories) -> None:
+    args = (message.text or "").split()[1:]
+    if args and args[0].lower() in ("verbose", "-v"):
+        await message.answer(await _routes_verbose(message.chat.id, repos))
+        return
     routes = await repos.routes.list_for_chat(message.chat.id)
     if not routes:
         await message.answer(
@@ -104,6 +122,61 @@ async def cmd_routes(message: Message, repos: Repositories) -> None:
         )
         return
     await message.answer(_ROUTES_PROMPT, reply_markup=routes_keyboard(routes))
+
+
+def _route_details(r: dict, prefs: Optional[dict]) -> str:
+    parts = []
+    if r["min_level"]:
+        parts.append(f"level≥{escape(r['min_level'])}")
+    if r["actions"]:
+        parts.append(f"actions={escape(r['actions'])}")
+    if r["digest_minutes"]:
+        parts.append(f"digest {r['digest_minutes']}m")
+    if r["thread_id"]:
+        parts.append(f"topic {r['thread_id']}")
+    muted = r["muted_until"]
+    if muted is not None:
+        if muted.tzinfo is None:
+            muted = muted.replace(tzinfo=timezone.utc)
+        if muted > datetime.now(timezone.utc):
+            parts.append(f"🔇 until {format_local(muted, prefs)}")
+    added = f"added {format_local(r['created_at'], prefs)}" if r["created_at"] else "added ?"
+    if r["created_by"]:
+        added += f" by <code>{r['created_by']}</code>"
+    parts.append(added)
+    return f"• {_route_label(r['project'], r['environment'])}\n    " + ", ".join(parts)
+
+
+async def _routes_verbose(chat_id: int, repos: Repositories) -> str:
+    routes = await repos.routes.list_for_chat(chat_id)
+    prefs = await repos.chat_settings.get(chat_id)
+    lines = [f"<b>Routes for this chat ({len(routes)}):</b>"]
+    lines += [_route_details(r, prefs) for r in routes] or ["<i>none</i>"]
+    entries = await repos.audit.recent_for_chat(chat_id, limit=10)
+    if entries:
+        lines.append("\n<b>Recent changes:</b>")
+        for e in entries:
+            who = f"<code>{e['user_id']}</code>" if e["user_id"] else "?"
+            line = f"<code>{format_local(e['ts'], prefs)}</code> {who} {escape(e['action'])}"
+            if e["details"]:
+                line += f": {escape(e['details'][:200])}"
+            lines.append(line)
+    return "\n".join(lines)
+
+
+@public_router.message(Command("whoami"))
+async def cmd_whoami(message: Message) -> None:
+    user = message.from_user
+    lines = []
+    if user:
+        name = escape(user.full_name) + (f" (@{escape(user.username)})" if user.username else "")
+        lines.append(f"👤 {name}\nUser id: <code>{user.id}</code>")
+        lines.append("🔑 Admin: " + ("yes" if is_admin(user.id) else "no"))
+    lines.append(f"💬 Chat id: <code>{message.chat.id}</code> ({escape(message.chat.type)})")
+    topic = _topic_of(message)
+    if topic:
+        lines.append(f"🧵 Topic id: <code>{topic}</code>")
+    await message.answer("\n".join(lines))
 
 
 _STATUS_ICON = {"sent": "✅", "failed": "❌", "skipped": "⏭"}
@@ -203,6 +276,8 @@ async def on_env_selected(
     inserted = await repos.routes.add(
         project, environment, chat_id, created_by=callback.from_user.id, thread_id=thread_id
     )
+    if inserted:
+        await _audit(repos, chat_id, callback.from_user, "route.add", _plain_route(project, environment))
     label = _route_label(project, environment)
     text = (
         f"✅ Route added: {label} → this chat."
@@ -236,6 +311,7 @@ async def cmd_add_route(message: Message, repos: Repositories) -> None:
     )
     label = _route_label(project, environment)
     if inserted:
+        await _audit(repos, message.chat.id, message.from_user, "route.add", _plain_route(project, environment))
         await message.answer(f"✅ Route added: {label} → this chat.")
     else:
         await message.answer(f"ℹ️ Route already exists: {label} → this chat.")
@@ -263,6 +339,8 @@ async def cmd_filter(message: Message, repos: Repositories) -> None:
     opts = parts[1:]
     if opts == ["clear"]:
         n = await repos.routes.set_filters(message.chat.id, project, min_level=None, actions=None)
+        if n:
+            await _audit(repos, message.chat.id, message.from_user, "filter.clear", project or "all")
         await message.answer(f"🧹 Filters cleared on {n} route(s).")
         return
 
@@ -292,6 +370,8 @@ async def cmd_filter(message: Message, repos: Repositories) -> None:
     if n == 0:
         await message.answer("No matching routes in this chat. Add one first with /subscribe.")
         return
+    plain = " ".join(f"{k.replace('min_', '')}={v}" for k, v in kwargs.items())
+    await _audit(repos, message.chat.id, message.from_user, "filter", f"{project or 'all'} {plain}")
     desc = " ".join(f"{k.replace('min_', '')}={escape(v)}" for k, v in kwargs.items())
     await message.answer(f"🔧 Updated {n} route(s): <code>{desc}</code>")
 
@@ -317,6 +397,7 @@ async def cmd_mute(message: Message, repos: Repositories) -> None:
     if n == 0:
         await message.answer("No matching routes in this chat.")
         return
+    await _audit(repos, message.chat.id, message.from_user, "mute", f"{project or 'all'} for {parts[0]}")
     await message.answer(
         f"🔇 Muted {n} route(s) until <code>{until:%Y-%m-%d %H:%M} UTC</code>. Use /unmute to resume."
     )
@@ -345,6 +426,10 @@ async def cmd_digest(message: Message, repos: Repositories) -> None:
     if n == 0:
         await message.answer("No matching routes in this chat.")
         return
+    await _audit(
+        repos, message.chat.id, message.from_user, "digest",
+        f"{project or 'all'} {'off' if minutes is None else f'{minutes}m'}",
+    )
     if minutes is None:
         await message.answer(f"⚡ {n} route(s) switched back to instant delivery.")
     else:
@@ -359,6 +444,8 @@ async def cmd_unmute(message: Message, repos: Repositories) -> None:
         await message.answer("Usage: <code>/unmute [project-slug]</code>")
         return
     n = await repos.routes.set_filters(message.chat.id, project, muted_until=None)
+    if n:
+        await _audit(repos, message.chat.id, message.from_user, "unmute", project or "all")
     await message.answer(f"🔔 Unmuted {n} route(s).")
 
 
@@ -391,6 +478,7 @@ async def cmd_tz(message: Message, repos: Repositories) -> None:
         await message.answer(f"Unknown timezone <code>{escape(parts[0])}</code>. Use an IANA name like Europe/Berlin.")
         return
     prefs = await repos.chat_settings.update(message.chat.id, timezone=tz)
+    await _audit(repos, message.chat.id, message.from_user, "settings.tz", tz)
     await message.answer(f"🕒 Timezone set to <code>{escape(tz)}</code>.\n\n" + _settings_text(prefs))
 
 
@@ -403,6 +491,7 @@ async def cmd_quiet(message: Message, repos: Repositories) -> None:
         return
     if parts[0].lower() == "off":
         prefs = await repos.chat_settings.update(message.chat.id, quiet_start=None, quiet_end=None)
+        await _audit(repos, message.chat.id, message.from_user, "settings.quiet", "off")
         await message.answer("🔔 Quiet hours disabled.\n\n" + _settings_text(prefs))
         return
     rng = parse_quiet_range(parts[0])
@@ -410,6 +499,7 @@ async def cmd_quiet(message: Message, repos: Repositories) -> None:
         await message.answer(usage)
         return
     prefs = await repos.chat_settings.update(message.chat.id, quiet_start=rng[0], quiet_end=rng[1])
+    await _audit(repos, message.chat.id, message.from_user, "settings.quiet", f"{rng[0]}-{rng[1]}")
     await message.answer(
         f"🌙 Quiet hours set: <code>{rng[0]}–{rng[1]}</code>. Non-fatal events are held and sent as a digest when they end.\n\n"
         + _settings_text(prefs)
@@ -480,6 +570,10 @@ async def cmd_import(message: Message, repos: Repositories) -> None:
 
     created_by = message.from_user.id if message.from_user else None
     added, updated = await repos.routes.import_routes(message.chat.id, result.routes, created_by)
+    await _audit(
+        repos, message.chat.id, message.from_user, "routes.import",
+        f"{len(result.routes)} route(s): {added} added, {updated} updated",
+    )
     await message.answer(f"📥 Imported {len(result.routes)} route(s): {added} added, {updated} updated.")
 
 
@@ -494,7 +588,10 @@ async def on_del_route(
         return
 
     chat_id = callback.message.chat.id
+    target = next((r for r in await repos.routes.list_for_chat(chat_id) if r["id"] == callback_data.route_id), None)
     removed = await repos.routes.remove(callback_data.route_id, chat_id)
+    if removed and target:
+        await _audit(repos, chat_id, callback.from_user, "route.remove", _plain_route(target["project"], target["environment"]))
     remaining = await repos.routes.list_for_chat(chat_id)
     if remaining:
         await _safe_edit(callback, _ROUTES_PROMPT, reply_markup=routes_keyboard(remaining))
