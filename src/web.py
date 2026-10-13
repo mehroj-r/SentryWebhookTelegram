@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from typing import Any
@@ -9,6 +10,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
+from . import metrics
 from .config import settings
 from .db import Repositories
 from .sentry.parser import ParsedEvent, parse as parse_sentry_event
@@ -51,6 +53,7 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
     secret_label = verify_any(raw_body, sig, settings.all_sentry_secrets)
     if secret_label is None:
         log.warning("Rejected Sentry request with invalid signature from %s", request.remote)
+        metrics.webhooks_rejected.inc(reason="signature")
         return web.Response(status=401, text="Invalid signature")
 
     # 3. Decode JSON
@@ -59,9 +62,11 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
         payload = json.loads(raw_body)
     except (json.JSONDecodeError, UnicodeDecodeError):
         log.warning("Invalid JSON from Sentry (resource=%s)", resource)
+        metrics.webhooks_rejected.inc(reason="json")
         return web.Response(status=400, text="Invalid JSON")
     if not isinstance(payload, dict):
         log.warning("Unexpected JSON payload type %s (resource=%s)", type(payload).__name__, resource)
+        metrics.webhooks_rejected.inc(reason="json")
         return web.Response(status=400, text="Invalid JSON")
 
     # 4. Back-pressure before we mark the hook as seen: a full queue means
@@ -69,6 +74,7 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
     #    swallowing the event.
     if queue.full():
         log.error("Delivery queue full (%d); asking Sentry to retry", queue.qsize())
+        metrics.webhooks_rejected.inc(reason="busy")
         return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
 
     # 5. Dedup by Request-ID (atomic insert; concurrent duplicates lose the race)
@@ -81,6 +87,7 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
             is_new = True
         if not is_new:
             log.debug("Duplicate Request-ID=%s, skipping", request_id)
+            metrics.webhooks_deduplicated.inc()
             return web.Response(status=200, text="ok")
 
     # 6. Parse — never let parse errors block the 200 response
@@ -98,7 +105,10 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
         queue.put_nowait(event)
     except asyncio.QueueFull:
         log.error("Delivery queue full; asking Sentry to retry")
+        metrics.webhooks_rejected.inc(reason="busy")
         return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
+
+    metrics.webhooks_received.inc(resource=resource or "unknown")
 
     # 9. Best-effort metadata learning in the background
     _spawn(app, _learn_project(repos, event, payload))
@@ -163,6 +173,19 @@ async def _health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "queue_size": queue.qsize()})
 
 
+async def _metrics(request: web.Request) -> web.Response:
+    token = settings.metrics_token
+    if token:
+        given = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(given.encode(), f"Bearer {token}".encode()):
+            return web.Response(status=401, text="Unauthorized", headers={"WWW-Authenticate": "Bearer"})
+    queue = request.app[QUEUE_KEY]
+    return web.Response(
+        text=metrics.render(queue.qsize),
+        headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+    )
+
+
 async def _wait_background_tasks(app: web.Application) -> None:
     tasks = list(app[BG_TASKS_KEY])
     if tasks:
@@ -180,6 +203,7 @@ def build_app(
     app[BG_TASKS_KEY] = set()
 
     app.router.add_get("/health", _health)
+    app.router.add_get("/metrics", _metrics)
 
     from .admin_web import register_admin  # imports this module's app keys
 

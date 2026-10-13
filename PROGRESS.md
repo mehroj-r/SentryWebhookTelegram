@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (142 tests at last update).
+Run `.venv/bin/python -m pytest` before and after every change (146 tests at last update).
 
 ## Done
 
@@ -25,6 +25,7 @@ Run `.venv/bin/python -m pytest` before and after every change (142 tests at las
 | 14 | `/test` command | `08f6894` | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
 | 15 | Web admin page | `84015ad` | `src/admin_web.py`, `GET /admin`, `ADMIN_TOKEN` (empty → 404); bearer / `X-Admin-Token` / `?token=`; no-store, CSP, no-referrer; `routes.list_all()`, `environments.list_all()` |
 | 16 | Dead-letter retry | `aaa5069` | failed rows now keep `text`; `delivery.retry_failed()` marks originals `retried` and logs a fresh row; `/retry_failed [N]` (admin); `POST /admin/retry` (token in form/header, not query) |
+| 17 | Prometheus `/metrics` | _next commit_ | `src/metrics.py` (hand-rolled labelled counters, `metrics.reset()` for tests); webhooks received/rejected/deduplicated, deliveries by status (counted in `_record` + retries), queue gauge; optional `METRICS_TOKEN` |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
@@ -33,7 +34,6 @@ Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 Routing and management
 
 Operations and observability
-- [ ] **Metrics endpoint** — `/metrics` Prometheus text format, hand-rolled counters in `src/metrics.py` (received, deduplicated, rejected_signature, delivered, failed, skipped, queue_size gauge).
 - [ ] **Postgres option** — replace `sqlite_insert` upserts in `repositories.py` with dialect-aware helper (`insert(...).on_conflict_do_*` for both via `sqlalchemy.dialects.postgresql`/`sqlite` chosen from `session.bind.dialect.name`); `make_url` already accepts full URLs; add `asyncpg` optional extra; make pragmas SQLite-only (already). Cannot be tested locally without Postgres — keep SQLite tests green.
 - [ ] **Docker / compose / systemd / GitHub Actions** — `Dockerfile` (python:3.12-slim, uv), `docker-compose.yml` (volume for `data.db`), `deploy/sentry-telegram.service`, `.github/workflows/ci.yml` running pytest; `.dockerignore`.
 - [ ] **Polling fallback** — `USE_WEBHOOK=false`: skip `set_webhook` (call `delete_webhook`), run `dp.start_polling` as a background task; still serve the Sentry HTTP endpoint. In `main.py`.

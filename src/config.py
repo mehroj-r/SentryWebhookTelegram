@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # Read-only web admin page at /admin (disabled when empty). Send it as
     # "Authorization: Bearer <token>", "X-Admin-Token: <token>" or ?token=<token>.
     admin_token: str = ""
+    # Prometheus /metrics: open when empty, else requires "Authorization: Bearer <token>".
+    metrics_token: str = ""
     # How long to remember Sentry Request-IDs for de-duplication.
     seen_request_ttl_days: int = 7
 

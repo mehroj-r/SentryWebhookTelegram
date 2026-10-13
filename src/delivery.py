@@ -16,6 +16,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import ReplyParameters
 
+from . import metrics
 from .burst import BurstCollapser, Summary
 from .chat_settings import quiet_until
 from .config import settings
@@ -207,6 +208,7 @@ async def _record(
     text: str,
     status: Optional[str] = None,
 ) -> None:
+    metrics.deliveries.inc(status=status or ("sent" if result.ok else "failed"))
     try:
         await repos.deliveries.record(
             chat_id=target.chat_id,
@@ -360,6 +362,7 @@ async def retry_failed(
     for row in await repos.deliveries.retryable(chat_id, limit):
         result = await _send_to_chat(bot, row["chat_id"], row["text"], thread_id=row["thread_id"])
         await repos.deliveries.set_status(row["id"], "retried")
+        metrics.deliveries.inc(status="sent" if result.ok else "failed")
         await repos.deliveries.record(
             chat_id=row["chat_id"], resource=row["resource"], action=row["action"],
             project=row["project"], environment=row["environment"], issue_id=row["issue_id"],
