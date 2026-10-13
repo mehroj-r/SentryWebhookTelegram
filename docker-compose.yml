@@ -1,0 +1,34 @@
+# docker compose up -d --build
+# Put your settings in .env (see .env.example). The SQLite database lives in
+# the "data" volume. To use PostgreSQL instead, start with
+#   docker compose --profile postgres up -d --build
+# and set DB_PATH=postgresql://sentry:sentry@postgres/sentry in .env.
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - data:/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: sentry
+      POSTGRES_PASSWORD: sentry
+      POSTGRES_DB: sentry
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentry"]
+      interval: 10s
+    restart: unless-stopped
+
+volumes:
+  data:
+  pgdata:

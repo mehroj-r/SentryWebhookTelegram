@@ -80,11 +80,12 @@ class Delivery(Base):
     environment: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     issue_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     title: Mapped[str] = mapped_column(String, nullable=False, default="")
-    status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped
+    status: Mapped[str] = mapped_column(String, nullable=False)  # sent | failed | skipped | digest | retried
     error: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     thread_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    # The HTML we sent, kept so later lifecycle events can edit the message.
+    # The HTML we sent (or failed to send), kept so later lifecycle events can
+    # edit the message and failed deliveries can be retried.
     text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
@@ -136,4 +137,28 @@ class ChatSettings(Base):
     quiet_end: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     format: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # html | plain
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuditEntry(Base):
+    """Who changed what in a chat's configuration (routes, filters, settings)."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_log_chat_ts", "chat_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    action: Mapped[str] = mapped_column(String, nullable=False)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SentryIdentity(Base):
+    """Telegram user → Sentry user (username or email) for "Assign to me"."""
+
+    __tablename__ = "sentry_identities"
+
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sentry_user: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

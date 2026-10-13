@@ -5,11 +5,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import (
+    AuditEntry,
     ChatSettings,
     Delivery,
     DigestItem,
@@ -18,11 +20,19 @@ from .models import (
     Project,
     Route,
     SeenRequest,
+    SentryIdentity,
 )
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _insert(session: AsyncSession, model):  # noqa: ANN001, ANN202
+    """INSERT that supports ON CONFLICT for the session's dialect (SQLite or PostgreSQL)."""
+    if session.bind.dialect.name == "postgresql":
+        return pg_insert(model)
+    return sqlite_insert(model)
 
 
 class BaseRepository:
@@ -53,7 +63,7 @@ class SeenRequestRepository(BaseRepository):
         """
         async with self._sessionmaker() as session:
             stmt = (
-                sqlite_insert(SeenRequest)
+                _insert(session, SeenRequest)
                 .values(request_id=request_id, ts=_utcnow())
                 .on_conflict_do_nothing(index_elements=["request_id"])
             )
@@ -88,7 +98,7 @@ class ProjectRepository(BaseRepository):
     ) -> None:
         """Insert or update a project, preserving existing non-null ref_id/name/org."""
         async with self._sessionmaker() as session:
-            stmt = sqlite_insert(Project).values(
+            stmt = _insert(session, Project).values(
                 slug=slug,
                 ref_id=ref_id,
                 name=name,
@@ -141,7 +151,7 @@ class InstallationRepository(BaseRepository):
     ) -> None:
         now = _utcnow()
         async with self._sessionmaker() as session:
-            stmt = sqlite_insert(Installation).values(
+            stmt = _insert(session, Installation).values(
                 uuid=uuid, org_slug=org_slug, app_slug=app_slug, status=status,
                 secret_label=secret_label, first_seen=now, last_seen=now,
             )
@@ -181,12 +191,27 @@ class EnvironmentRepository(BaseRepository):
     async def register(self, project: str, environment: str) -> None:
         async with self._sessionmaker() as session:
             stmt = (
-                sqlite_insert(Environment)
+                _insert(session, Environment)
                 .values(project=project, environment=environment)
                 .on_conflict_do_nothing(index_elements=["project", "environment"])
             )
             await session.execute(stmt)
             await session.commit()
+
+    async def list_all(self) -> dict[str, list[str]]:
+        """project → sorted environments."""
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(Environment.project, Environment.environment).order_by(
+                        Environment.project, Environment.environment
+                    )
+                )
+            ).all()
+        out: dict[str, list[str]] = {}
+        for project, env in rows:
+            out.setdefault(project, []).append(env)
+        return out
 
     async def list_for_project(self, project: str) -> list[str]:
         async with self._sessionmaker() as session:
@@ -252,6 +277,46 @@ class RouteRepository(BaseRepository):
                 await session.rollback()
                 return False
 
+    async def import_routes(
+        self, chat_id: int, routes: list[dict], created_by: Optional[int] = None
+    ) -> tuple[int, int]:
+        """
+        Merge `routes` (validated dicts from `route_io.parse_import`) into the
+        chat's routes in one transaction: new (project, environment) pairs are
+        added, existing ones get their filter / digest / topic settings
+        overwritten. Routes not in the import are left alone.
+        Returns (added, updated).
+        """
+        added = updated = 0
+        async with self._sessionmaker() as session:
+            for r in routes:
+                env = r["environment"]
+                existing = await session.scalar(
+                    select(Route).where(
+                        Route.project == r["project"],
+                        Route.environment.is_(None) if env is None else Route.environment == env,
+                        Route.chat_id == chat_id,
+                    )
+                )
+                if existing is None:
+                    existing = Route(
+                        project=r["project"],
+                        environment=env,
+                        chat_id=chat_id,
+                        created_by=created_by,
+                        created_at=_utcnow(),
+                    )
+                    session.add(existing)
+                    added += 1
+                else:
+                    updated += 1
+                existing.min_level = r["min_level"]
+                existing.actions = r["actions"]
+                existing.digest_minutes = r["digest_minutes"]
+                existing.thread_id = r["thread_id"]
+            await session.commit()
+        return added, updated
+
     async def remove(self, route_id: int, chat_id: int) -> bool:
         """
         Delete a route, but only if it belongs to `chat_id`.
@@ -266,6 +331,13 @@ class RouteRepository(BaseRepository):
             )
             await session.commit()
             return bool(result.rowcount)
+
+    async def list_all(self) -> list[dict]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(select(Route).order_by(Route.chat_id, Route.project, Route.environment))
+            ).scalars().all()
+            return [_route_dict(r) for r in rows]
 
     async def list_for_chat(self, chat_id: int) -> list[dict]:
         async with self._sessionmaker() as session:
@@ -433,6 +505,35 @@ class DeliveryRepository(BaseRepository):
             rows = (await session.execute(stmt)).scalars().all()
             return [_delivery_dict(r) for r in rows]
 
+    async def retryable(self, chat_id: Optional[int] = None, limit: int = 10) -> list[dict]:
+        """Most recent failed deliveries that kept their text (all chats when chat_id is None), oldest first."""
+        stmt = (
+            select(Delivery)
+            .where(Delivery.status == "failed", Delivery.text.is_not(None))
+            .order_by(Delivery.created_at.desc(), Delivery.id.desc())
+            .limit(limit)
+        )
+        if chat_id is not None:
+            stmt = stmt.where(Delivery.chat_id == chat_id)
+        async with self._sessionmaker() as session:
+            rows = (await session.execute(stmt)).scalars().all()
+            return [_delivery_dict(r) for r in reversed(rows)]
+
+    async def count_retryable(self) -> int:
+        async with self._sessionmaker() as session:
+            return (
+                await session.scalar(
+                    select(func.count()).select_from(Delivery).where(
+                        Delivery.status == "failed", Delivery.text.is_not(None)
+                    )
+                )
+            ) or 0
+
+    async def set_status(self, delivery_id: int, status: str) -> None:
+        async with self._sessionmaker() as session:
+            await session.execute(update(Delivery).where(Delivery.id == delivery_id).values(status=status))
+            await session.commit()
+
     async def last_message_for_issue(self, chat_id: int, issue_id: str) -> Optional[int]:
         """Telegram message id of the most recent successful post about an issue."""
         row = await self.last_for_issue(chat_id, issue_id)
@@ -471,6 +572,25 @@ class DeliveryRepository(BaseRepository):
                 )
             ).all()
             return {status: count for status, count in rows}
+
+    async def counts_by_project(self, chat_id: int, since: datetime) -> dict[str, dict[str, int]]:
+        """project → {status: count} for one chat's deliveries since `since` (digest sends excluded)."""
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(Delivery.project, Delivery.status, func.count())
+                    .where(
+                        Delivery.chat_id == chat_id,
+                        Delivery.created_at >= since,
+                        Delivery.resource != "digest",
+                    )
+                    .group_by(Delivery.project, Delivery.status)
+                )
+            ).all()
+        out: dict[str, dict[str, int]] = {}
+        for project, status, count in rows:
+            out.setdefault(project or "?", {})[status] = count
+        return out
 
     async def purge_older_than(self, max_age: timedelta) -> int:
         cutoff = _utcnow() - max_age
@@ -656,6 +776,63 @@ def _chat_settings_dict(r: ChatSettings) -> dict:
     }
 
 
+# ── Audit log ──────────────────────────────────────────────────────────────────
+
+
+class AuditRepository(BaseRepository):
+    async def record(
+        self, chat_id: int, user_id: Optional[int], action: str, details: Optional[str] = None
+    ) -> None:
+        async with self._sessionmaker() as session:
+            session.add(AuditEntry(ts=_utcnow(), chat_id=chat_id, user_id=user_id, action=action, details=details))
+            await session.commit()
+
+    async def purge_older_than(self, max_age: timedelta) -> int:
+        cutoff = _utcnow() - max_age
+        async with self._sessionmaker() as session:
+            result = await session.execute(delete(AuditEntry).where(AuditEntry.ts < cutoff))
+            await session.commit()
+            return result.rowcount or 0
+
+    async def recent_for_chat(self, chat_id: int, limit: int = 10) -> list[dict]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(AuditEntry)
+                    .where(AuditEntry.chat_id == chat_id)
+                    .order_by(AuditEntry.ts.desc(), AuditEntry.id.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return [
+                {"ts": r.ts, "user_id": r.user_id, "action": r.action, "details": r.details}
+                for r in rows
+            ]
+
+
+# ── Sentry identities ──────────────────────────────────────────────────────────
+
+
+class SentryIdentityRepository(BaseRepository):
+    async def get(self, telegram_user_id: int) -> Optional[str]:
+        async with self._sessionmaker() as session:
+            row = await session.get(SentryIdentity, telegram_user_id)
+            return row.sentry_user if row else None
+
+    async def set(self, telegram_user_id: int, sentry_user: Optional[str]) -> None:
+        """Link (or with None, unlink) a Telegram user to a Sentry user."""
+        async with self._sessionmaker() as session:
+            row = await session.get(SentryIdentity, telegram_user_id)
+            if sentry_user is None:
+                if row is not None:
+                    await session.delete(row)
+            elif row is None:
+                session.add(SentryIdentity(telegram_user_id=telegram_user_id, sentry_user=sentry_user, updated_at=_utcnow()))
+            else:
+                row.sentry_user, row.updated_at = sentry_user, _utcnow()
+            await session.commit()
+
+
 # ── Container ──────────────────────────────────────────────────────────────────
 
 
@@ -671,3 +848,5 @@ class Repositories:
         self.deliveries = DeliveryRepository(sessionmaker)
         self.digests = DigestRepository(sessionmaker)
         self.chat_settings = ChatSettingsRepository(sessionmaker)
+        self.audit = AuditRepository(sessionmaker)
+        self.identities = SentryIdentityRepository(sessionmaker)

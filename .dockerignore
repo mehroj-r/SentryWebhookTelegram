@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+.venv
+.pytest_cache
+**/__pycache__
+*.py[cod]
+*.db
+*.db-wal
+*.db-shm
+.env
+tests
+deploy
+PROGRESS.md

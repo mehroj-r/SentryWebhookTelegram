@@ -19,11 +19,14 @@ class Settings(BaseSettings):
 
     # Telegram
     bot_token: str
+    # False: long-poll Telegram for updates instead (no public HTTPS URL
+    # needed for the bot itself; Sentry still has to reach SENTRY_WEBHOOK_PATH).
+    use_webhook: bool = True
     tg_webhook_path: str = "/telegram/webhook"
-    webhook_secret_token: str
+    webhook_secret_token: str = ""
 
     # Server
-    webhook_base_url: str
+    webhook_base_url: str = ""
     sentry_webhook_path: str = "/sentry/webhook"
     host: str = "0.0.0.0"
     port: int = 8080
@@ -44,11 +47,33 @@ class Settings(BaseSettings):
     sentry_client_secret: str = ""
     sentry_client_secrets: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
 
+    # Sentry Web API (optional) — enables Resolve / Ignore / Assign buttons on
+    # issue alerts. Needs an internal-integration token with Issue & Event
+    # "Read & Write". One org: SENTRY_API_TOKEN + SENTRY_ORG_SLUG. Several:
+    # SENTRY_API_TOKENS as JSON {"acme": "...", "beta": "..."} or
+    # "acme:token1,beta:token2", keyed by organisation slug (or by the
+    # SENTRY_CLIENT_SECRETS label when that differs).
+    sentry_api_url: str = "https://sentry.io"
+    sentry_api_token: str = ""
+    sentry_org_slug: str = ""
+    sentry_api_tokens: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+
     # App
     db_path: str = "data.db"
     default_chat_id: Optional[int] = None
     # NoDecode: accept both JSON ("[1,2]") and comma-separated ("1,2") forms.
     admin_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
+    # Read-only web admin page at /admin (disabled when empty). Send it as
+    # "Authorization: Bearer <token>", "X-Admin-Token: <token>" or ?token=<token>.
+    admin_token: str = ""
+    # Prometheus /metrics: open when empty, else requires "Authorization: Bearer <token>".
+    metrics_token: str = ""
+    # Reject webhooks whose Sentry-Hook-Timestamp is further than this from now
+    # (seconds, either direction). 0 disables. Requests without the header pass.
+    replay_window_seconds: int = 300
+    # Delivery log (/last, /stats, threading, retries) and audit log rows older
+    # than this are deleted hourly. 0 keeps them forever.
+    log_retention_days: int = 30
     # How long to remember Sentry Request-IDs for de-duplication.
     seen_request_ttl_days: int = 7
 
@@ -68,7 +93,7 @@ class Settings(BaseSettings):
             return [int(part.strip()) for part in cleaned.split(",") if part.strip()]
         raise ValueError("ADMIN_IDS must be a list of integers")
 
-    @field_validator("sentry_client_secrets", mode="before")
+    @field_validator("sentry_client_secrets", "sentry_api_tokens", mode="before")
     @classmethod
     def _parse_client_secrets(cls, value: Any) -> Any:
         if value is None:
@@ -87,15 +112,23 @@ class Settings(BaseSettings):
             for pair in text.split(","):
                 label, sep, secret = pair.partition(":")
                 if not sep or not label.strip() or not secret.strip():
-                    raise ValueError("SENTRY_CLIENT_SECRETS must be 'label:secret,label2:secret2' or JSON")
+                    raise ValueError("expected 'label:secret,label2:secret2' or JSON")
                 out[label.strip()] = secret.strip()
             return out
-        raise ValueError("SENTRY_CLIENT_SECRETS must be a mapping")
+        raise ValueError("expected a mapping")
 
     @model_validator(mode="after")
     def _require_some_sentry_secret(self) -> "Settings":
         if not self.sentry_client_secret and not self.sentry_client_secrets:
             raise ValueError("Set SENTRY_CLIENT_SECRET or SENTRY_CLIENT_SECRETS")
+        return self
+
+    @model_validator(mode="after")
+    def _require_webhook_settings(self) -> "Settings":
+        if self.use_webhook and not (self.webhook_base_url and self.webhook_secret_token):
+            raise ValueError(
+                "WEBHOOK_BASE_URL and WEBHOOK_SECRET_TOKEN are required unless USE_WEBHOOK=false"
+            )
         return self
 
     @property
@@ -108,13 +141,27 @@ class Settings(BaseSettings):
         return out
 
     @property
+    def sentry_api_orgs(self) -> dict[str, str]:
+        """org slug (or label) → Web API token."""
+        out: dict[str, str] = {}
+        if self.sentry_api_token and self.sentry_org_slug:
+            out[self.sentry_org_slug] = self.sentry_api_token
+        out.update(self.sentry_api_tokens)
+        return out
+
+    @field_validator("sentry_api_url")
+    @classmethod
+    def _normalize_api_url(cls, value: str) -> str:
+        return value.strip().rstrip("/")
+
+    @property
     def multi_org(self) -> bool:
         return len(self.all_sentry_secrets) > 1
 
     @field_validator("webhook_secret_token")
     @classmethod
     def _check_secret_token(cls, value: str) -> str:
-        if not _SECRET_TOKEN_RE.match(value):
+        if value and not _SECRET_TOKEN_RE.match(value):
             raise ValueError(
                 "WEBHOOK_SECRET_TOKEN must be 1-256 characters of A-Z, a-z, 0-9, '_' or '-'"
             )
@@ -124,7 +171,7 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_base_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
-        if not value.startswith("https://"):
+        if value and not value.startswith("https://"):
             raise ValueError("WEBHOOK_BASE_URL must start with https:// (Telegram requires TLS)")
         return value
 

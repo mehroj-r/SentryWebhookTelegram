@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import time
 import logging
 from typing import Any
 
@@ -9,6 +11,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
+from . import metrics
 from .config import settings
 from .db import Repositories
 from .sentry.parser import ParsedEvent, parse as parse_sentry_event
@@ -18,6 +21,7 @@ log = logging.getLogger(__name__)
 
 # Typed app keys (aiohttp ≥3.9 warns on plain string keys).
 REPOS_KEY: web.AppKey[Repositories] = web.AppKey("repos", Repositories)
+BOT_KEY: web.AppKey[Bot] = web.AppKey("bot", Bot)
 QUEUE_KEY: web.AppKey["asyncio.Queue[ParsedEvent | None]"] = web.AppKey("queue", asyncio.Queue)
 BG_TASKS_KEY: web.AppKey[set["asyncio.Task[Any]"]] = web.AppKey("bg_tasks", set)
 
@@ -50,7 +54,16 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
     secret_label = verify_any(raw_body, sig, settings.all_sentry_secrets)
     if secret_label is None:
         log.warning("Rejected Sentry request with invalid signature from %s", request.remote)
+        metrics.webhooks_rejected.inc(reason="signature")
         return web.Response(status=401, text="Invalid signature")
+
+    # 2b. Replay window. Sentry signs only the body, so a determined attacker
+    #     can forge this header; it still stops verbatim replays of captured
+    #     requests, and Request-ID dedup below catches exact duplicates.
+    if _is_stale(request.headers.get("Sentry-Hook-Timestamp")):
+        log.warning("Rejected stale/invalid Sentry-Hook-Timestamp from %s", request.remote)
+        metrics.webhooks_rejected.inc(reason="stale")
+        return web.Response(status=401, text="Stale request")
 
     # 3. Decode JSON
     resource = request.headers.get("Sentry-Hook-Resource", "")
@@ -58,9 +71,11 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
         payload = json.loads(raw_body)
     except (json.JSONDecodeError, UnicodeDecodeError):
         log.warning("Invalid JSON from Sentry (resource=%s)", resource)
+        metrics.webhooks_rejected.inc(reason="json")
         return web.Response(status=400, text="Invalid JSON")
     if not isinstance(payload, dict):
         log.warning("Unexpected JSON payload type %s (resource=%s)", type(payload).__name__, resource)
+        metrics.webhooks_rejected.inc(reason="json")
         return web.Response(status=400, text="Invalid JSON")
 
     # 4. Back-pressure before we mark the hook as seen: a full queue means
@@ -68,6 +83,7 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
     #    swallowing the event.
     if queue.full():
         log.error("Delivery queue full (%d); asking Sentry to retry", queue.qsize())
+        metrics.webhooks_rejected.inc(reason="busy")
         return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
 
     # 5. Dedup by Request-ID (atomic insert; concurrent duplicates lose the race)
@@ -80,6 +96,7 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
             is_new = True
         if not is_new:
             log.debug("Duplicate Request-ID=%s, skipping", request_id)
+            metrics.webhooks_deduplicated.inc()
             return web.Response(status=200, text="ok")
 
     # 6. Parse — never let parse errors block the 200 response
@@ -97,12 +114,29 @@ async def _sentry_webhook(request: web.Request) -> web.Response:
         queue.put_nowait(event)
     except asyncio.QueueFull:
         log.error("Delivery queue full; asking Sentry to retry")
+        metrics.webhooks_rejected.inc(reason="busy")
         return web.Response(status=503, text="Busy, retry later", headers={"Retry-After": "60"})
+
+    metrics.webhooks_received.inc(resource=resource or "unknown")
 
     # 9. Best-effort metadata learning in the background
     _spawn(app, _learn_project(repos, event, payload))
 
     return web.Response(status=200, text="ok")
+
+
+def _is_stale(header: str | None, now: float | None = None) -> bool:
+    """True when the timestamp is unparseable or outside REPLAY_WINDOW_SECONDS. Missing → not stale."""
+    window = settings.replay_window_seconds
+    if window <= 0 or not header:
+        return False
+    try:
+        ts = float(header)
+    except ValueError:
+        return True
+    if ts > 1e11:  # milliseconds
+        ts /= 1000
+    return abs((now if now is not None else time.time()) - ts) > window
 
 
 async def _attach_org(repos: Repositories, event: ParsedEvent, secret_label: str) -> None:
@@ -162,6 +196,19 @@ async def _health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "queue_size": queue.qsize()})
 
 
+async def _metrics(request: web.Request) -> web.Response:
+    token = settings.metrics_token
+    if token:
+        given = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(given.encode(), f"Bearer {token}".encode()):
+            return web.Response(status=401, text="Unauthorized", headers={"WWW-Authenticate": "Bearer"})
+    queue = request.app[QUEUE_KEY]
+    return web.Response(
+        text=metrics.render(queue.qsize),
+        headers={"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
+    )
+
+
 async def _wait_background_tasks(app: web.Application) -> None:
     tasks = list(app[BG_TASKS_KEY])
     if tasks:
@@ -174,22 +221,29 @@ def build_app(
     """Build the aiohttp Application with Sentry + Telegram webhook routes."""
     app = web.Application(client_max_size=settings.max_body_bytes)
     app[REPOS_KEY] = repos
+    app[BOT_KEY] = bot
     app[QUEUE_KEY] = queue
     app[BG_TASKS_KEY] = set()
 
     app.router.add_get("/health", _health)
+    app.router.add_get("/metrics", _metrics)
+
+    from .admin_web import register_admin  # imports this module's app keys
+
+    register_admin(app)
 
     # Sentry receiver
     app.router.add_post(settings.sentry_webhook_path, _sentry_webhook)
 
-    # Telegram webhook (aiogram)
-    SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        secret_token=settings.webhook_secret_token,
-    ).register(app, path=settings.tg_webhook_path)
-
-    setup_application(app, dp, bot=bot)
+    # Telegram webhook (aiogram). In polling mode main.py runs the dispatcher
+    # itself, including its startup/shutdown hooks.
+    if settings.use_webhook:
+        SimpleRequestHandler(
+            dispatcher=dp,
+            bot=bot,
+            secret_token=settings.webhook_secret_token,
+        ).register(app, path=settings.tg_webhook_path)
+        setup_application(app, dp, bot=bot)
     app.on_shutdown.append(_wait_background_tasks)
 
     return app
