@@ -17,8 +17,15 @@ ALEMBIC_INI = _PROJECT_ROOT / "alembic.ini"
 
 
 def make_url(path: str) -> str:
+    """
+    DB_PATH → SQLAlchemy async URL: a file path or ":memory:" means SQLite;
+    plain postgres:// / postgresql:// URLs get the asyncpg driver.
+    """
     if path == ":memory:":
         return "sqlite+aiosqlite:///:memory:"
+    for scheme in ("postgres://", "postgresql://"):
+        if path.startswith(scheme):
+            return "postgresql+asyncpg://" + path[len(scheme):]
     if "://" in path:  # a full SQLAlchemy URL was given
         return path
     return f"sqlite+aiosqlite:///{path}"

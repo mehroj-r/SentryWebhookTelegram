@@ -55,3 +55,36 @@ def test_models_match_latest_migration(tmp_path):
         diff = compare_metadata(ctx, Base.metadata)
     engine.dispose()
     assert diff == [], diff
+
+
+async def test_models_match_migrations_on_postgres():
+    """Same drift check against PostgreSQL (only when TEST_DATABASE_URL is set)."""
+    import pytest
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    from tests.conftest import TEST_DATABASE_URL
+
+    if not TEST_DATABASE_URL:
+        pytest.skip("TEST_DATABASE_URL not set")
+    db = Database(TEST_DATABASE_URL)
+    await db.connect()
+
+    def _diff(conn):  # noqa: ANN001, ANN202
+        ctx = MigrationContext.configure(conn, opts={"compare_type": True})
+        return compare_metadata(ctx, Base.metadata)
+
+    async with db._engine.connect() as conn:
+        diff = await conn.run_sync(_diff)
+    await db.close()
+    assert diff == [], diff
+
+
+def test_make_url():
+    from src.db.database import make_url
+
+    assert make_url(":memory:") == "sqlite+aiosqlite:///:memory:"
+    assert make_url("data.db") == "sqlite+aiosqlite:///data.db"
+    assert make_url("postgres://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
+    assert make_url("postgresql://u@h:5433/db") == "postgresql+asyncpg://u@h:5433/db"
+    assert make_url("postgresql+asyncpg://u@h/db") == "postgresql+asyncpg://u@h/db"

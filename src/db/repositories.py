@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,6 +25,13 @@ from .models import (
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _insert(session: AsyncSession, model):  # noqa: ANN001, ANN202
+    """INSERT that supports ON CONFLICT for the session's dialect (SQLite or PostgreSQL)."""
+    if session.bind.dialect.name == "postgresql":
+        return pg_insert(model)
+    return sqlite_insert(model)
 
 
 class BaseRepository:
@@ -54,7 +62,7 @@ class SeenRequestRepository(BaseRepository):
         """
         async with self._sessionmaker() as session:
             stmt = (
-                sqlite_insert(SeenRequest)
+                _insert(session, SeenRequest)
                 .values(request_id=request_id, ts=_utcnow())
                 .on_conflict_do_nothing(index_elements=["request_id"])
             )
@@ -89,7 +97,7 @@ class ProjectRepository(BaseRepository):
     ) -> None:
         """Insert or update a project, preserving existing non-null ref_id/name/org."""
         async with self._sessionmaker() as session:
-            stmt = sqlite_insert(Project).values(
+            stmt = _insert(session, Project).values(
                 slug=slug,
                 ref_id=ref_id,
                 name=name,
@@ -142,7 +150,7 @@ class InstallationRepository(BaseRepository):
     ) -> None:
         now = _utcnow()
         async with self._sessionmaker() as session:
-            stmt = sqlite_insert(Installation).values(
+            stmt = _insert(session, Installation).values(
                 uuid=uuid, org_slug=org_slug, app_slug=app_slug, status=status,
                 secret_label=secret_label, first_seen=now, last_seen=now,
             )
@@ -182,7 +190,7 @@ class EnvironmentRepository(BaseRepository):
     async def register(self, project: str, environment: str) -> None:
         async with self._sessionmaker() as session:
             stmt = (
-                sqlite_insert(Environment)
+                _insert(session, Environment)
                 .values(project=project, environment=environment)
                 .on_conflict_do_nothing(index_elements=["project", "environment"])
             )
