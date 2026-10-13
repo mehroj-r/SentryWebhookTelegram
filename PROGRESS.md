@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (156 tests + 1 Postgres-only at last update).
+Run `.venv/bin/python -m pytest` before and after every change (241 tests + 1 Postgres-only at last update; ~80 are per-key catalog checks).
 For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv/bin/python -m pytest` against a throwaway cluster (`initdb` + `pg_ctl ... -o "-p 55432 -k '' -c listen_addresses=127.0.0.1"`); `asyncpg` is installed in `.venv`.
 
 ## Done
@@ -31,6 +31,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 19 | Docker / compose / systemd / CI | `d827caf` | `Dockerfile` (3.12-slim + uv, non-root, `/data` volume, healthcheck), `docker-compose.yml` (optional `postgres` profile), `deploy/sentry-telegram.service` (hardened), `.github/workflows/ci.yml` (3.12 + 3.14, Postgres service job, docker build). Image build not verified locally (no Docker daemon access); deps + suite verified on a 3.12 venv |
 | 20 | Polling fallback | `733bd6b` | `USE_WEBHOOK=false`: webhook URL/secret optional; `main.start_telegram()` deletes webhook and runs `dp.start_polling` as a task (shutdown via `dp.stop_polling()`; task death stops the app); `build_app` skips the Telegram route |
 | 21 | Startup self-check | `40c84df` | `src/selfcheck.py` (`get_me`, webhook URL / last error, `DEFAULT_CHAT_ID` reachability, routing summary, warns when events would go nowhere); runs as a background task from `main()` |
+| 22a | Localisation: bot replies | _next commit_ | `src/i18n.py` (`t(lang, key, **kw)`, catalog with en/ru/uz side by side); `LanguageMiddleware` (outer, both routers) injects `lang`: chat `/lang` → user's Telegram language in private chats → en; keyboards take `lang`. Route-import validation errors and filter skip reasons stay English |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
@@ -41,7 +42,7 @@ Routing and management
 Operations and observability
 
 Polish
-- [ ] **Localisation (en/ru/uz)** — `src/i18n.py` with dict-based catalogs; `chat_settings.language` column already exists; `/lang <code>`; apply to bot replies first, event formatting second.
+- [ ] **Localisation, part 2: event formatting** — replies are done (22a); localise labels in `src/sentry/formatters.py` (`format_event(event, lang)`, digests, burst summary, status footer) using the chat's language in `delivery.py`.
 - [ ] **`/stats`** — per-project counts over 24h/7d from `deliveries` (`count_by_status` exists; add group-by project).
 - [ ] **Plain-text format mode** — `chat_settings.format` column exists; `/format plain|html`; add a `strip_html()` in formatters and send with `parse_mode=None` when plain.
 - [ ] **Replay protection** — reject if `Sentry-Hook-Timestamp` older than `REPLAY_WINDOW_SECONDS` (default 300); keep dedup. In `src/web.py` before dedup.
@@ -55,5 +56,6 @@ Polish
 - Every schema change = new file in `migrations/versions/` with a defensive `upgrade()` (check `has_table` / column names) and a model update; `tests/test_migrations.py::test_models_match_latest_migration` fails on drift.
 - Commands that take user text must escape it (`html.escape`) and validate against `SLUG_RE` (defined in `src/route_io.py`, imported as `_SLUG_RE` in handlers).
 - Admin-gated commands go on `admin_router`; read-only ones on `public_router`.
+- User-facing text goes through `t(lang, key)` (`src/i18n.py`); handlers take a `lang: str` parameter. Add every new key in all three languages — `tests/test_i18n.py` enforces it.
 - Commands that change chat config call `_audit(repos, chat_id, user, action, details)` after a successful change (details are plain text; escaped on display).
 - Config values live in `src/config.py`; document new ones in `.env.example`.

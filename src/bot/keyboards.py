@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..filters import describe_filters
+from ..i18n import t
 
 # Telegram caps callback_data at 64 bytes. Sentry project slugs (≤50 chars) and
 # environment names (≤64 chars) can't be embedded verbatim, so callbacks carry a
@@ -61,7 +62,7 @@ def projects_keyboard(projects: list[dict]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def environments_keyboard(project: str, environments: list[str]) -> InlineKeyboardMarkup:
+def environments_keyboard(project: str, environments: list[str], lang: str = "en") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     project_key = key_for(project)
     for env in environments:
@@ -70,17 +71,17 @@ def environments_keyboard(project: str, environments: list[str]) -> InlineKeyboa
             callback_data=EnvCallback(project_key=project_key, env_key=key_for(env)),
         )
     builder.button(
-        text="🌐 Any environment",
+        text=t(lang, "kb.any_env"),
         callback_data=EnvCallback(project_key=project_key, env_key=ANY_ENV),
     )
     builder.adjust(2)
     return builder.as_markup()
 
 
-def routes_keyboard(routes: list[dict]) -> InlineKeyboardMarkup:
+def routes_keyboard(routes: list[dict], lang: str = "en") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for r in routes:
-        env_label = r["environment"] or "any env"
+        env_label = r["environment"] or t(lang, "kb.any_env_short")
         topic = " 🧵" if r.get("thread_id") else ""
         builder.button(
             text=_button_label(f"✖️ {r['project']} / {env_label}{topic}{describe_filters(r)}"),

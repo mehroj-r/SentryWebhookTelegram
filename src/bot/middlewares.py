@@ -10,10 +10,10 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, Chat, Message, TelegramObject
 
 from ..config import settings
+from ..i18n import DEFAULT_LANGUAGE, normalize_language, t
 
 log = logging.getLogger(__name__)
 
-_DENIED_MSG = "⛔ You are not allowed to do that."
 _ADMIN_STATUSES = {"creator", "administrator"}
 ADMIN_CACHE_SECONDS = 300
 
@@ -68,6 +68,43 @@ async def is_admin(
     return await _is_chat_admin(bot, chat.id, user_id)
 
 
+def _event_chat(event: TelegramObject) -> Optional[Chat]:
+    if isinstance(event, Message):
+        return event.chat
+    if isinstance(event, CallbackQuery) and event.message is not None:
+        return event.message.chat
+    return None
+
+
+class LanguageMiddleware(BaseMiddleware):
+    """
+    Put the reply language into handler data as `lang`: the chat's /lang
+    setting, else (private chats only) the user's Telegram language, else English.
+    Register as an *outer* middleware so AdminMiddleware can use it too.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        lang: Optional[str] = None
+        chat = _event_chat(event)
+        repos = data.get("repos")
+        if chat is not None and repos is not None:
+            try:
+                prefs = await repos.chat_settings.get(chat.id)
+                lang = normalize_language((prefs or {}).get("language"))
+            except Exception:  # noqa: BLE001
+                log.exception("chat settings lookup failed for chat %s", chat.id)
+        if lang is None and chat is not None and chat.type == "private":
+            user = getattr(event, "from_user", None)
+            lang = normalize_language(getattr(user, "language_code", None))
+        data["lang"] = lang or DEFAULT_LANGUAGE
+        return await handler(event, data)
+
+
 class AdminMiddleware(BaseMiddleware):
     """Short-circuit any handler on this router unless `is_admin` allows the sender."""
 
@@ -89,9 +126,9 @@ class AdminMiddleware(BaseMiddleware):
 
         if not await is_admin(data["bot"], chat, user_id, sender_chat):
             if isinstance(event, Message):
-                await event.answer(_DENIED_MSG)
+                await event.answer(t(data.get("lang"), "denied"))
             elif isinstance(event, CallbackQuery):
-                await event.answer(_DENIED_MSG, show_alert=True)
+                await event.answer(t(data.get("lang"), "denied"), show_alert=True)
             return None  # do NOT call the handler
 
         return await handler(event, data)
