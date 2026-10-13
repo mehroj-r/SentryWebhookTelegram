@@ -37,17 +37,24 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 24 | Plain-text format mode | `443cf10` | `/format html|plain` (admin, audited); `strip_html()` in formatters (links → "text (url)"); conversion happens only at send/edit time (`_send_to_chat(plain=)`, stamping, retries, digests, bursts, `/test`) — stored delivery text stays HTML. Bot command replies stay HTML |
 | 25 | Replay protection | `0e17b2d` | `REPLAY_WINDOW_SECONDS` (default 300, 0 off); `_is_stale()` after signature check, before dedup; ± window (clock skew), ms timestamps OK, missing header passes, garbage rejected; metric reason `stale`. Header is not signed by Sentry → only stops verbatim replays. If Sentry retries a 503 later than the window, that retry is rejected |
 | 26 | Interactive issue actions | `b5cbd6a` | `src/sentry/api.py` (`SentryAPI.update_issue`, `pick_org`), `src/bot/issue_actions.py` (`IssueCallback`, `issue_keyboard`, `issue_router`, `/sentry_user`); `SENTRY_API_TOKEN`+`SENTRY_ORG_SLUG` or `SENTRY_API_TOKENS`, `SENTRY_API_URL`; `sentry_identities` table (0009). Buttons on first post only; kept on stamped original for assigned/unresolved, removed otherwise. Clicks: admin-gated + chat must have an alert for that issue |
+| 27 | README | _next commit_ | Setup (Telegram, Sentry internal integration, CI release/deploy POST with verified signing recipe), command table, env var table, endpoints, deployment, development |
 
 Migrations so far: `0001`…`0009`. Next revision id: `0010`.
 
-## Remaining (suggested order)
+## Remaining
+
+All roadmap items are done. Follow-ups noticed along the way:
+
+- [ ] **Retention**: `deliveries.purge_older_than()` exists but nothing calls it, and `audit_log` has no purge either — both grow forever. Add a `DELIVERY_RETENTION_DAYS` setting and call both from `main._purge_seen_requests` (rename to a general purge loop).
+- [ ] **Docker image build** has only been checked by CI config, not built locally (no Docker daemon access in the dev session).
+
+## Original roadmap sections (now empty)
 
 Routing and management
 
 Operations and observability
 
 Polish
-- [ ] **README** — setup, Sentry internal-integration configuration (webhook URL, client secret, resources to enable), command reference, env var table, deployment notes.
 
 ## Conventions
 
