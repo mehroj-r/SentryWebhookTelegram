@@ -9,12 +9,25 @@ from aiogram.client.telegram import PRODUCTION
 from aiogram.methods import (
     AnswerCallbackQuery,
     EditMessageText,
+    GetChatMember,
     GetFile,
     SendDocument,
     SendMessage,
     TelegramMethod,
 )
-from aiogram.types import CallbackQuery, Chat, Document, File, Message, Update, User
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    ChatMemberAdministrator,
+    ChatMemberMember,
+    ChatMemberOwner,
+    Document,
+    File,
+    Message,
+    Update,
+    User,
+)
 
 from src.bot.handlers import admin_router, public_router
 
@@ -30,6 +43,8 @@ class FakeSession:
         self.calls: list[TelegramMethod] = []
         self._ids = itertools.count(1000)
         self.files: dict[str, bytes] = {}  # file_id → content, served by GetFile + stream_content
+        # (chat_id, user_id) → "creator" | "administrator" | "member" | "error"; default member
+        self.members: dict[tuple[int, int], str] = {}
 
     async def __call__(self, bot: Bot, method: TelegramMethod, timeout=None):  # noqa: ANN001
         self.calls.append(method)
@@ -40,6 +55,8 @@ class FakeSession:
             )
         if isinstance(method, EditMessageText):
             return True
+        if isinstance(method, GetChatMember):
+            return _member(method, self.members.get((method.chat_id, method.user_id), "member"))
         if isinstance(method, GetFile):
             return File(file_id=method.file_id, file_unique_id=method.file_id, file_path=method.file_id)
         return True
@@ -69,6 +86,24 @@ class FakeSession:
     @property
     def last_text(self) -> str:
         return self.sent[-1].text if self.sent else ""
+
+
+def _member(method: GetChatMember, status: str):  # noqa: ANN202
+    user = User(id=method.user_id, is_bot=False, first_name="U")
+    if status == "error":
+        raise TelegramBadRequest(method=method, message="Bad Request: chat not found")
+    if status == "creator":
+        return ChatMemberOwner(user=user, is_anonymous=False)
+    if status == "administrator":
+        flags = dict.fromkeys(
+            ("can_be_edited", "is_anonymous", "can_manage_chat", "can_delete_messages",
+             "can_manage_video_chats", "can_restrict_members", "can_promote_members",
+             "can_change_info", "can_invite_users", "can_post_stories", "can_edit_stories",
+             "can_delete_stories"),
+            False,
+        )
+        return ChatMemberAdministrator(user=user, **flags)
+    return ChatMemberMember(user=user)
 
 
 _DP: Dispatcher | None = None
@@ -102,6 +137,7 @@ class Harness:
         *,
         reply_to: Message | None = None,
         document: bytes | None = None,
+        sender_chat: Chat | None = None,
     ) -> None:
         """Send `text` as a command; with `document` it becomes the caption of an uploaded file."""
         cmd_len = len(text.split()[0])
@@ -112,7 +148,7 @@ class Harness:
             fields = {"text": text, "entities": entities}
         message = Message(
             message_id=next(self._msg_ids), date=dt.datetime.now(), chat=chat, from_user=user,
-            reply_to_message=reply_to, **fields,
+            reply_to_message=reply_to, sender_chat=sender_chat, **fields,
         )
         await self.dp.feed_update(self.bot, Update(update_id=next(self._update_ids), message=message))
 

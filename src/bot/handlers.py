@@ -171,7 +171,8 @@ async def cmd_whoami(message: Message) -> None:
     if user:
         name = escape(user.full_name) + (f" (@{escape(user.username)})" if user.username else "")
         lines.append(f"👤 {name}\nUser id: <code>{user.id}</code>")
-        lines.append("🔑 Admin: " + ("yes" if is_admin(user.id) else "no"))
+        admin = await is_admin(message.bot, message.chat, user.id, message.sender_chat)
+        lines.append("🔑 Admin: " + ("yes" if admin else "no"))
     lines.append(f"💬 Chat id: <code>{message.chat.id}</code> ({escape(message.chat.type)})")
     topic = _topic_of(message)
     if topic:
