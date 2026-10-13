@@ -32,7 +32,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 20 | Polling fallback | `733bd6b` | `USE_WEBHOOK=false`: webhook URL/secret optional; `main.start_telegram()` deletes webhook and runs `dp.start_polling` as a task (shutdown via `dp.stop_polling()`; task death stops the app); `build_app` skips the Telegram route |
 | 21 | Startup self-check | `40c84df` | `src/selfcheck.py` (`get_me`, webhook URL / last error, `DEFAULT_CHAT_ID` reachability, routing summary, warns when events would go nowhere); runs as a background task from `main()` |
 | 22a | Localisation: bot replies | `15d6117` | `src/i18n.py` (`t(lang, key, **kw)`, catalog with en/ru/uz side by side); `LanguageMiddleware` (outer, both routers) injects `lang`: chat `/lang` → user's Telegram language in private chats → en; keyboards take `lang`. Route-import validation errors and filter skip reasons stay English |
-| 22b | Localisation: event formatting | _next commit_ | `fmt.*` catalog keys + `plural()` (ru one/few/many); `format_event/format_digest/format_burst_summary/status_footer` take `lang` (default en, English output byte-identical); `delivery._chat_lang()`, one rendering per language per event. Sentry action tokens (CREATED…) stay untranslated |
+| 22b | Localisation: event formatting | `a943c0e` | `fmt.*` catalog keys + `plural()` (ru one/few/many); `format_event/format_digest/format_burst_summary/status_footer` take `lang` (default en, English output byte-identical); `delivery._chat_lang()`, one rendering per language per event. Sentry action tokens (CREATED…) stay untranslated |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
