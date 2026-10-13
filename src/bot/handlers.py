@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
 from datetime import datetime, timezone
@@ -13,8 +14,10 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Document, Message, U
 
 from ..chat_settings import format_local, parse_quiet_range, parse_timezone
 from ..db import Repositories
-from ..filters import LEVELS, normalize_level, parse_actions, parse_duration
+from ..filters import LEVELS, normalize_level, parse_actions, parse_duration, skip_reason
 from ..route_io import MAX_BYTES, SLUG_RE as _SLUG_RE, export_routes, parse_import
+from ..samples import KINDS as SAMPLE_KINDS, sample_event
+from ..sentry.formatters import format_event
 from .keyboards import (
     ANY_ENV,
     DelRouteCallback,
@@ -98,6 +101,7 @@ async def cmd_start(message: Message) -> None:
         "• /settings, /tz &lt;Area/City&gt;, /quiet &lt;22:00-08:00|off&gt; — chat preferences\n"
         "• Run /subscribe or /add_route inside a forum topic to post there\n"
         "• /export — download this chat's routes as JSON; /import — load them (attach or reply to the file)\n"
+        "• /test [issue|error|event_alert|metric_alert|release] — post a sample alert here\n"
         "• /last — show the last events delivered to this chat\n"
         "• /chat_id — show this chat's id (for DEFAULT_CHAT_ID); /whoami — your id and permissions\n"
         "• /help — show this message",
@@ -576,6 +580,43 @@ async def cmd_import(message: Message, repos: Repositories) -> None:
         f"{len(result.routes)} route(s): {added} added, {updated} updated",
     )
     await message.answer(f"📥 Imported {len(result.routes)} route(s): {added} added, {updated} updated.")
+
+
+def _sample_target(routes: list[dict]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """(org, project, environment) of this chat's first concrete route, for realistic samples."""
+    for r in routes:
+        if "*" not in r["project"]:
+            org, _, slug = r["project"].rpartition("/")
+            return org or None, slug, r["environment"]
+    return None, None, None
+
+
+@admin_router.message(Command("test"))
+async def cmd_test(message: Message, repos: Repositories) -> None:
+    """/test [kind] — format a sample event and post it here (or in this topic)."""
+    parts = (message.text or "").split()[1:]
+    kind = parts[0].lower() if parts else "issue"
+    if len(parts) > 1 or kind not in SAMPLE_KINDS:
+        await message.answer(f"Usage: <code>/test [{'|'.join(SAMPLE_KINDS)}]</code>")
+        return
+
+    routes = await repos.routes.list_for_chat(message.chat.id)
+    org, project, environment = _sample_target(routes)
+    event = sample_event(kind, project, environment)
+    event.org = org
+    await message.answer(format_event(event))
+
+    if not routes:
+        verdict = "ℹ️ This chat has no routes yet — real events will only arrive after /subscribe or /add_route."
+    else:
+        key = f"{org}/{event.project_slug}" if org else event.project_slug
+        matching = [r for r in routes if fnmatch.fnmatchcase(key, r["project"])]
+        reasons = [skip_reason(event, r) for r in matching] or ["no route in this chat matches this project"]
+        if any(reason is None for reason in reasons):
+            verdict = "✅ This chat's filters would deliver an event like this."
+        else:
+            verdict = "⏭ This chat's filters would skip it: " + escape(reasons[0], quote=False)
+    await message.answer(f"🧪 That was a test message.\n{verdict}")
 
 
 @admin_router.callback_query(DelRouteCallback.filter())

@@ -1,7 +1,7 @@
 # Progress
 
 Roadmap for the Sentry → Telegram bot. One feature per commit, each with tests.
-Run `.venv/bin/python -m pytest` before and after every change (118 tests at last update).
+Run `.venv/bin/python -m pytest` before and after every change (128 tests at last update).
 
 ## Done
 
@@ -22,13 +22,13 @@ Run `.venv/bin/python -m pytest` before and after every change (118 tests at las
 | 11 | Export / import routes | `b6d9ff8` | `src/route_io.py` (format v1, all-or-nothing validation), `RouteRepository.import_routes` merges; `/export` public, `/import` admin; thread ids dropped when importing into another chat |
 | 12 | Audit log, `/routes verbose`, `/whoami` | `9965dde` | `audit_log` table (0008), `repos.audit`; `_audit()` helper in handlers logs only real changes; `is_admin()` in middlewares |
 | 13 | Per-chat admin roles | `6efab16` | `is_admin(bot, chat, user_id, sender_chat)` in middlewares; empty `ADMIN_IDS` → private open, group admins via `get_chat_member` (5 min cache, errors not cached), anonymous admins via `sender_chat`; harness `session.members` |
+| 14 | `/test` command | _next commit_ | `src/samples.py` (`sample_event(kind, project, env)`); admin-only; uses the chat's first concrete route for project/org/env and reports what the chat's filters would do |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
 ## Remaining (suggested order)
 
 Routing and management
-- [ ] **`/test` command** — build a fake `ParsedEvent` (issue.created) and run `format_event` → send to current chat/topic; optionally `/test error|metric_alert`.
 
 Operations and observability
 - [ ] **Web admin page** — aiohttp routes under `/admin` (token via `ADMIN_TOKEN` setting, query param or header): projects, environments, routes (all chats), queue depth, recent deliveries with status filter, installations. Server-rendered HTML, no JS deps.
