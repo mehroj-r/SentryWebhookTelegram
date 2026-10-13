@@ -34,7 +34,7 @@ For Postgres: `TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55432/stg .venv
 | 22a | Localisation: bot replies | `15d6117` | `src/i18n.py` (`t(lang, key, **kw)`, catalog with en/ru/uz side by side); `LanguageMiddleware` (outer, both routers) injects `lang`: chat `/lang` → user's Telegram language in private chats → en; keyboards take `lang`. Route-import validation errors and filter skip reasons stay English |
 | 22b | Localisation: event formatting | `a943c0e` | `fmt.*` catalog keys + `plural()` (ru one/few/many); `format_event/format_digest/format_burst_summary/status_footer` take `lang` (default en, English output byte-identical); `delivery._chat_lang()`, one rendering per language per event. Sentry action tokens (CREATED…) stay untranslated |
 | 23 | `/stats` | `2bf3bf9` | `deliveries.counts_by_project(chat_id, since)` (digest sends excluded); public `/stats`: 24h + 7d totals by status and top 10 projects; `retried` rows not counted; localised |
-| 24 | Plain-text format mode | _next commit_ | `/format html|plain` (admin, audited); `strip_html()` in formatters (links → "text (url)"); conversion happens only at send/edit time (`_send_to_chat(plain=)`, stamping, retries, digests, bursts, `/test`) — stored delivery text stays HTML. Bot command replies stay HTML |
+| 24 | Plain-text format mode | `443cf10` | `/format html|plain` (admin, audited); `strip_html()` in formatters (links → "text (url)"); conversion happens only at send/edit time (`_send_to_chat(plain=)`, stamping, retries, digests, bursts, `/test`) — stored delivery text stays HTML. Bot command replies stay HTML |
 
 Migrations so far: `0001`…`0008`. Next revision id: `0009`.
 
