@@ -212,14 +212,15 @@ def build_app(
     # Sentry receiver
     app.router.add_post(settings.sentry_webhook_path, _sentry_webhook)
 
-    # Telegram webhook (aiogram)
-    SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        secret_token=settings.webhook_secret_token,
-    ).register(app, path=settings.tg_webhook_path)
-
-    setup_application(app, dp, bot=bot)
+    # Telegram webhook (aiogram). In polling mode main.py runs the dispatcher
+    # itself, including its startup/shutdown hooks.
+    if settings.use_webhook:
+        SimpleRequestHandler(
+            dispatcher=dp,
+            bot=bot,
+            secret_token=settings.webhook_secret_token,
+        ).register(app, path=settings.tg_webhook_path)
+        setup_application(app, dp, bot=bot)
     app.on_shutdown.append(_wait_background_tasks)
 
     return app

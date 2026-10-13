@@ -19,11 +19,14 @@ class Settings(BaseSettings):
 
     # Telegram
     bot_token: str
+    # False: long-poll Telegram for updates instead (no public HTTPS URL
+    # needed for the bot itself; Sentry still has to reach SENTRY_WEBHOOK_PATH).
+    use_webhook: bool = True
     tg_webhook_path: str = "/telegram/webhook"
-    webhook_secret_token: str
+    webhook_secret_token: str = ""
 
     # Server
-    webhook_base_url: str
+    webhook_base_url: str = ""
     sentry_webhook_path: str = "/sentry/webhook"
     host: str = "0.0.0.0"
     port: int = 8080
@@ -103,6 +106,14 @@ class Settings(BaseSettings):
             raise ValueError("Set SENTRY_CLIENT_SECRET or SENTRY_CLIENT_SECRETS")
         return self
 
+    @model_validator(mode="after")
+    def _require_webhook_settings(self) -> "Settings":
+        if self.use_webhook and not (self.webhook_base_url and self.webhook_secret_token):
+            raise ValueError(
+                "WEBHOOK_BASE_URL and WEBHOOK_SECRET_TOKEN are required unless USE_WEBHOOK=false"
+            )
+        return self
+
     @property
     def all_sentry_secrets(self) -> dict[str, str]:
         """label → secret, with the single legacy secret labelled 'default'."""
@@ -119,7 +130,7 @@ class Settings(BaseSettings):
     @field_validator("webhook_secret_token")
     @classmethod
     def _check_secret_token(cls, value: str) -> str:
-        if not _SECRET_TOKEN_RE.match(value):
+        if value and not _SECRET_TOKEN_RE.match(value):
             raise ValueError(
                 "WEBHOOK_SECRET_TOKEN must be 1-256 characters of A-Z, a-z, 0-9, '_' or '-'"
             )
@@ -129,7 +140,7 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_base_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
-        if not value.startswith("https://"):
+        if value and not value.startswith("https://"):
             raise ValueError("WEBHOOK_BASE_URL must start with https:// (Telegram requires TLS)")
         return value
 
