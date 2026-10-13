@@ -48,14 +48,6 @@ All roadmap items are done. Follow-ups noticed along the way:
 - [ ] **Retention**: `deliveries.purge_older_than()` exists but nothing calls it, and `audit_log` has no purge either — both grow forever. Add a `DELIVERY_RETENTION_DAYS` setting and call both from `main._purge_seen_requests` (rename to a general purge loop).
 - [ ] **Docker image build** has only been checked by CI config, not built locally (no Docker daemon access in the dev session).
 
-## Original roadmap sections (now empty)
-
-Routing and management
-
-Operations and observability
-
-Polish
-
 ## Conventions
 
 - Fresh installs pull newer aiogram than `.venv` (3.29); test fixtures must not hard-code Telegram type field lists (see `_member()` in the harness).
